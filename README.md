@@ -14,6 +14,7 @@ Lotterymcp 是一个排列3（P3）历史数据、MCP 接入和本地确定性�
 - [GitHub 快速开始](docs/github-quickstart.zh-CN.md)
 - [MCP 接入说明](docs/mcp-usage.zh-CN.md)
 - [分析问题示例](docs/prompt-templates.zh-CN.md)
+- [排列3个人研究实验室产品方案](docs/p3-research-product-plan.zh-CN.md)
 
 ## 能做什么
 
