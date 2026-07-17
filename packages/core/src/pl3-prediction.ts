@@ -4,19 +4,21 @@ import path from 'node:path'
 
 export type Pl3PlayType = 'direct' | 'group3' | 'group6' | 'mixed'
 export type Pl3TicketPlayType = Exclude<Pl3PlayType, 'mixed'>
+export const PL3_LOTTERY_TYPE = 'pl3' as const
+export type Pl3LotteryType = typeof PL3_LOTTERY_TYPE
 
 export type Pl3SourceRecord = {
-  lotteryType?: string
-  period?: string | number
-  drawDate?: string
-  numbers?: string
-  numbersList?: unknown[]
-  numbers_list?: unknown[]
+  lotteryType?: unknown
+  period?: unknown
+  drawDate?: unknown
+  numbers?: unknown
+  numbersList?: unknown
+  numbers_list?: unknown
   [key: string]: unknown
 }
 
 export type Pl3Record = {
-  lotteryType: 'pl3'
+  lotteryType: Pl3LotteryType
   period: string
   drawDate: string
   numbers: string
@@ -31,7 +33,7 @@ export type Pl3PayoutConfig = {
 }
 
 export type Pl3PredictionQuery = {
-  lotteryType?: string
+  lotteryType?: Pl3LotteryType
   periods?: number
   tickets?: number
   playType?: Pl3PlayType
@@ -98,7 +100,7 @@ export type Pl3Settlement = {
 
 export type Pl3PredictionResult = {
   predictionId: string
-  lotteryType: 'pl3'
+  lotteryType: Pl3LotteryType
   generatedAt: string
   afterPeriod: string
   target: 'next-draw'
@@ -179,6 +181,12 @@ const sha256 = (value: string) => createHash('sha256').update(value).digest('hex
 const comparePeriods = (left: string, right: string) =>
   left.localeCompare(right, 'zh-CN', { numeric: true, sensitivity: 'base' })
 
+export const isValidPl3DrawDate = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const parsed = new Date(`${value}T00:00:00.000Z`)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+}
+
 const parseNumbers = (record: Pl3SourceRecord): [number, number, number] | null => {
   const raw = Array.isArray(record.numbersList)
     ? record.numbersList
@@ -200,8 +208,8 @@ export const normalizePl3Records = (records: readonly Pl3SourceRecord[]): Pl3Rec
       throw new Pl3PredictionError('LOTTERYMCP_PL3_INVALID_RECORD', '排列3历史数据包含无效记录。')
     }
 
-    const lotteryType = String(sourceRecord.lotteryType || 'pl3').trim().toLowerCase()
-    if (lotteryType !== 'pl3') {
+    const lotteryType = String(sourceRecord.lotteryType || PL3_LOTTERY_TYPE).trim().toLowerCase()
+    if (lotteryType !== PL3_LOTTERY_TYPE) {
       throw new Pl3PredictionError(
         'LOTTERYMCP_ONLY_PL3_SUPPORTED',
         `当前版本只支持排列3(pl3)，不支持 ${lotteryType || '(空)'}。`,
@@ -209,6 +217,7 @@ export const normalizePl3Records = (records: readonly Pl3SourceRecord[]): Pl3Rec
     }
 
     const period = String(sourceRecord.period || '').trim()
+    const drawDate = String(sourceRecord.drawDate || '').trim().slice(0, 10)
     const numbersList = parseNumbers(sourceRecord)
     if (!period || !/^\d{5,12}$/.test(period)) {
       throw new Pl3PredictionError(
@@ -222,16 +231,22 @@ export const normalizePl3Records = (records: readonly Pl3SourceRecord[]): Pl3Rec
         `排列3第 ${period} 期必须包含三个 0-9 数字。`,
       )
     }
+    if (!isValidPl3DrawDate(drawDate)) {
+      throw new Pl3PredictionError(
+        'LOTTERYMCP_PL3_INVALID_DRAW_DATE',
+        `排列3第 ${period} 期的开奖日期无效: ${drawDate || '(空)'}`,
+      )
+    }
 
     const normalized: Pl3Record = {
-      lotteryType: 'pl3',
+      lotteryType: PL3_LOTTERY_TYPE,
       period,
-      drawDate: String(sourceRecord.drawDate || '').trim().slice(0, 10),
+      drawDate,
       numbers: numbersList.join(','),
       numbersList,
     }
     const previous = byPeriod.get(period)
-    if (previous && previous.numbers !== normalized.numbers) {
+    if (previous && (previous.numbers !== normalized.numbers || previous.drawDate !== normalized.drawDate)) {
       throw new Pl3PredictionError(
         'LOTTERYMCP_PL3_DUPLICATE_PERIOD',
         `排列3第 ${period} 期存在冲突的重复记录。`,
@@ -600,8 +615,8 @@ export const predictPl3 = (
   sourceRecords: readonly Pl3SourceRecord[],
   query: Pl3PredictionQuery = {},
 ): Pl3PredictionResult => {
-  const lotteryType = String(query.lotteryType || 'pl3').trim().toLowerCase()
-  if (lotteryType !== 'pl3') {
+  const lotteryType = String(query.lotteryType || PL3_LOTTERY_TYPE).trim().toLowerCase()
+  if (lotteryType !== PL3_LOTTERY_TYPE) {
     throw new Pl3PredictionError('LOTTERYMCP_ONLY_PL3_SUPPORTED', `当前版本只支持排列3(pl3)，不支持 ${lotteryType}。`)
   }
 
@@ -632,7 +647,7 @@ export const predictPl3 = (
 
   return {
     predictionId,
-    lotteryType: 'pl3',
+    lotteryType: PL3_LOTTERY_TYPE,
     generatedAt,
     afterPeriod: normalized.at(-1)!.period,
     target: 'next-draw',

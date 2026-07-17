@@ -28,7 +28,9 @@ Lotterymcp 只提供排列3（`pl3`）数据和确定性预测回测。
 先同步排列3公开数据：
 
 ```bash
+lotterymcp init --mode official --data-dir .lotterymcp-data --periods 200
 lotterymcp sync --source official --limit 500
+lotterymcp doctor
 ```
 
 如果公开网站限制自动请求，可导入规范化 JSON：
@@ -36,6 +38,26 @@ lotterymcp sync --source official --limit 500
 ```bash
 lotterymcp sync --source file --file history.json --limit 500
 ```
+
+导入文件可以是记录数组，也可以是以下结构：
+
+```json
+{
+  "records": [{
+    "lotteryType": "pl3",
+    "period": "2026177",
+    "drawDate": "2026-07-10",
+    "numbers": "8,1,2",
+    "numbersList": [8, 1, 2]
+  }]
+}
+```
+
+- `lotteryType` 可省略，显式值只能是 `pl3`。
+- `period` 必须是 5 到 12 位数字；`drawDate` 必须是有效的 `YYYY-MM-DD` 日期。
+- `numbers` 或 `numbersList` 必须包含三个 `0..9` 整数。
+- 同一期号完全相同的数据会去重；号码或日期冲突会拒绝整批导入。
+- 新旧缓存先合并再截取最新 `--limit` 期，最大值为 1000。
 
 然后使用：
 
@@ -64,12 +86,13 @@ official 模式不需要 Token，不调用或破解 NEUXSBOT 受控接口。
 - `lottery.summary`：缓存摘要。
 - `lottery.predict`：候选排序和 walk-forward 回测。
 
-`lottery.predict` 参数：
+五个工具共同接受可选的 `lotteryType: "pl3"`；省略时默认使用 `pl3`。MCP Schema 会直接拒绝其他值。
+
+`lottery.predict` 其他参数：
 
 - `periods`：`100..1000`，默认 200。
 - `tickets`：`1..100`，默认 10。
 - `playType`：`direct`、`group3`、`group6` 或 `mixed`。
-- `lotteryType`：可省略；显式传值只能是 `pl3`。
 
 预测 score 只是排序分，不是概率。奖金和 ROI 是按配置计算的历史模拟。
 

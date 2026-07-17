@@ -1,6 +1,6 @@
 {
   "name": "neuxnbcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "type": "module",
   "description": "Lotterymcp CLI for P3 history sync, MCP access, prediction, and walk-forward backtesting",
@@ -20,8 +20,8 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "lotterymcp-core": "0.2.0",
-    "lotterymcp-server": "0.2.0"
+    "lotterymcp-core": "0.3.0",
+    "lotterymcp-server": "0.3.0"
   },
   "engines": {
     "node": ">=20"
@@ -37,6 +37,13 @@
     "backtest"
   ],
   "homepage": "https://www.neuxsbot.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bbccoolly/Lotterymcp-P3.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bbccoolly/Lotterymcp-P3/issues"
+  },
   "publishConfig": {
     "access": "public"
   }

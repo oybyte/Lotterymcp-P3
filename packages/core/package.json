@@ -1,6 +1,6 @@
 {
   "name": "lotterymcp-core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "type": "module",
   "description": "Core P3 data providers, deterministic prediction, and walk-forward backtesting",
@@ -20,10 +20,18 @@
     "mcp",
     "lottery",
     "pl3",
+    "p3",
     "neuxsbot",
     "client"
   ],
   "homepage": "https://www.neuxsbot.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bbccoolly/Lotterymcp-P3.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bbccoolly/Lotterymcp-P3/issues"
+  },
   "publishConfig": {
     "access": "public"
   }

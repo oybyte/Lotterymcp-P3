@@ -34,7 +34,7 @@ const TOKEN_PAGE_URL = 'https://www.neuxsbot.com/member/api-keys'
 
 const MENU_TEXT = `请选择操作：
   1. 注册/登录并获取 Token
-  2. 配置接口地址、Token、默认期数
+  2. 配置数据模式和默认期数
   3. 生成 MCP 配置片段
   4. 检查当前配置和网站连通性
   5. 启动 MCP 服务
@@ -49,11 +49,11 @@ const HELP_TEXT = `临时打开菜单:
   npm i -g lotterymcp
 
 使用方法:
-  1. 先注册/登录官网并获取 Token
-  2. 再配置 API_BASE_URL / TOKEN / DEFAULT_PERIODS
-  3. 复制 MCP 配置片段到支持 MCP 的 AI 工具
-  4. 在 AI 对话里读取排列3历史数据并指定期数
-  5. 如需本地直接分析，可运行排列3预测核心
+  1. remote 模式配置官网 Token；official 模式同步公开排列3数据
+  2. 运行 init 保存数据模式和默认期数
+  3. 运行 doctor 检查排列3数据状态
+  4. 复制 MCP 配置片段到支持 MCP 的 AI 工具
+  5. 使用 predict 生成排列3候选与回测
 
 可用命令:
   serve            启动 MCP stdio 服务
@@ -65,7 +65,7 @@ const HELP_TEXT = `临时打开菜单:
   sync             同步官方公开开奖数据到本地缓存
 
 说明:
-  predict/analyze 使用内置 TypeScript 预测核心，不需要 Python。
+  predict/analyze 共用内置 TypeScript P3 预测核心。
   sync 命令只访问公开开奖数据源，不调用 NEUXSBOT 受控接口。
 
 当前版本:
@@ -88,7 +88,7 @@ const TOKEN_TEXT = `注册/登录并获取 Token:
 
 const renderConfigSummary = (config: Partial<LotteryMcpConfig>) => `当前配置:
   API_BASE_URL: ${config.apiBaseUrl || '(未设置)'}
-  TOKEN: ${maskToken(config.token || '')}
+  TOKEN: ${config.dataMode === 'official' ? '(official 模式不使用)' : maskToken(config.token || '')}
   DEFAULT_PERIODS: ${config.defaultPeriods || '(未设置)'}
   DATA_MODE: ${config.dataMode || 'remote'}
   DATA_DIR: ${config.dataDir || '.lotterymcp-data'}
@@ -101,6 +101,17 @@ const renderAnalyzeUsage = () => {
 玩法: direct, group3, group6, mixed
 `
 }
+
+const renderInitUsage = () => `用法:
+  lotterymcp init --mode official --data-dir .lotterymcp-data --periods 200
+  lotterymcp init --mode remote --api-base-url https://www.neuxsbot.com --token TOKEN --periods 200
+
+模式: remote, official
+`
+
+const renderDoctorUsage = () => `用法:
+  lotterymcp doctor
+`
 
 const isPositiveInteger = (value: string) => /^\d+$/.test(value.trim())
 
@@ -115,7 +126,7 @@ const buildNextConfig = (
   },
 ): LotteryMcpConfig => ({
   apiBaseUrl: input.apiBaseUrl?.trim() || currentConfig.apiBaseUrl || DEFAULT_API_BASE_URL,
-  token: input.token?.trim() || currentConfig.token || '',
+  token: input.dataMode === 'official' ? '' : input.token?.trim() || currentConfig.token || '',
   defaultPeriods: input.defaultPeriods?.trim() || currentConfig.defaultPeriods || DEFAULT_PERIODS,
   dataMode: input.dataMode || currentConfig.dataMode || 'remote',
   dataDir: input.dataDir?.trim() || currentConfig.dataDir || '.lotterymcp-data',
@@ -143,17 +154,91 @@ const persistConfig = async (nextConfig: LotteryMcpConfig) => {
   await saveLocalConfig(nextConfig)
   console.log('\n配置已保存。')
   console.log(`配置文件: ${getConfigPath()}`)
-  console.log('Token 是敏感信息，请不要分享该配置文件。')
+  if (nextConfig.token) console.log('Token 是敏感信息，请不要分享该配置文件。')
   console.log(renderConfigSummary(nextConfig))
   return 0
 }
 
-const promptForConfig = async () => {
+type InitOptions = {
+  mode?: 'remote' | 'official'
+  apiBaseUrl?: string
+  token?: string
+  periods?: string
+  dataDir?: string
+  help?: boolean
+}
+
+const parseInitArgs = (argv: string[]): InitOptions => {
+  const parsed: InitOptions = {}
+  const readValue = (index: number, name: string) => {
+    const value = argv[index + 1]
+    if (!value || value.startsWith('--')) throw new Error(`${name} 缺少参数值。`)
+    return value
+  }
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === '--help' || arg === '-h') {
+      parsed.help = true
+      continue
+    }
+    if (arg === '--mode') {
+      const mode = readValue(index, '--mode').toLowerCase()
+      if (mode !== 'remote' && mode !== 'official') throw new Error(`不支持的数据模式: ${mode}`)
+      parsed.mode = mode
+      index += 1
+      continue
+    }
+    if (arg === '--api-base-url') {
+      parsed.apiBaseUrl = readValue(index, '--api-base-url')
+      index += 1
+      continue
+    }
+    if (arg === '--token') {
+      parsed.token = readValue(index, '--token')
+      index += 1
+      continue
+    }
+    if (arg === '--periods') {
+      parsed.periods = readValue(index, '--periods')
+      index += 1
+      continue
+    }
+    if (arg === '--data-dir') {
+      parsed.dataDir = readValue(index, '--data-dir')
+      index += 1
+      continue
+    }
+    throw new Error(`未知参数: ${arg}`)
+  }
+  return parsed
+}
+
+const promptForConfig = async (argv: string[] = []) => {
+  let options: InitOptions
+  try {
+    options = parseInitArgs(argv)
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    console.log(renderInitUsage())
+    return 1
+  }
+  if (options.help) {
+    console.log(renderInitUsage())
+    return 0
+  }
   const currentConfig = await resolveConfig()
+  const hasNamedOptions = argv.length > 0
 
   if (!process.stdin.isTTY) {
-    const pipedInput = readFileSync(0, 'utf8').split(/\r?\n/)
-    const nextConfig = buildNextConfig(currentConfig, {
+    const pipedInput = hasNamedOptions ? [] : readFileSync(0, 'utf8').split(/\r?\n/)
+    const nextConfig = buildNextConfig(currentConfig, hasNamedOptions ? {
+      dataMode: options.mode,
+      apiBaseUrl: options.apiBaseUrl,
+      token: options.token,
+      defaultPeriods: options.periods,
+      dataDir: options.dataDir,
+    } : {
+      dataMode: 'remote',
       apiBaseUrl: pipedInput[0],
       token: pipedInput[1],
       defaultPeriods: pipedInput[2],
@@ -167,20 +252,40 @@ const promptForConfig = async () => {
   })
 
   try {
-    const apiBaseUrlInput = (
-      await rl.question(`接口地址 [${currentConfig.apiBaseUrl || DEFAULT_API_BASE_URL}]: `)
-    ).trim()
-    const tokenInput = (
-      await rl.question(`Token [${currentConfig.token ? maskToken(currentConfig.token) : '必填'}]: `)
-    ).trim()
-    const defaultPeriodsInput = (
+    const defaultMode = currentConfig.dataMode === 'official' ? 'official' : 'remote'
+    const modeInput = options.mode || (
+      await rl.question(`数据模式 remote/official [${defaultMode}]: `)
+    ).trim().toLowerCase() || defaultMode
+    if (modeInput !== 'remote' && modeInput !== 'official') {
+      console.error(`不支持的数据模式: ${modeInput}`)
+      return 1
+    }
+
+    let apiBaseUrlInput = options.apiBaseUrl
+    let tokenInput = options.token
+    let dataDirInput = options.dataDir
+    if (modeInput === 'remote') {
+      apiBaseUrlInput ??= (
+        await rl.question(`接口地址 [${currentConfig.apiBaseUrl || DEFAULT_API_BASE_URL}]: `)
+      ).trim()
+      tokenInput ??= (
+        await rl.question(`Token [${currentConfig.token ? maskToken(currentConfig.token) : '必填'}]: `)
+      ).trim()
+    } else {
+      dataDirInput ??= (
+        await rl.question(`数据目录 [${currentConfig.dataDir || '.lotterymcp-data'}]: `)
+      ).trim()
+    }
+    const defaultPeriodsInput = options.periods ?? (
       await rl.question(`默认期数 [${currentConfig.defaultPeriods || DEFAULT_PERIODS}]: `)
     ).trim()
 
     const nextConfig = buildNextConfig(currentConfig, {
+      dataMode: modeInput,
       apiBaseUrl: apiBaseUrlInput,
       token: tokenInput,
       defaultPeriods: defaultPeriodsInput,
+      dataDir: dataDirInput,
     })
 
     return persistConfig(nextConfig)
@@ -268,7 +373,16 @@ const renderDoctorSummary = (health: any) => {
   ].join('\n')
 }
 
-const runDoctor = async () => {
+const runDoctor = async (argv: string[] = []) => {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log(renderDoctorUsage())
+    return 0
+  }
+  if (argv.length > 0) {
+    console.error(`未知参数: ${argv[0]}`)
+    console.log(renderDoctorUsage())
+    return 1
+  }
   const config = await resolveConfig()
   const missing = validateConfig(config)
   console.log(renderConfigSummary(config))
@@ -434,6 +548,10 @@ const parsePredictionArgs = (argv: string[], allowProgramAlias = false) => {
 }
 
 const runPredictionCommand = async (argv: string[], allowProgramAlias = false) => {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log(renderAnalyzeUsage())
+    return 0
+  }
   let parsed: ReturnType<typeof parsePredictionArgs>
 
   try {
@@ -558,6 +676,10 @@ const parseSyncArgs = (argv: string[]) => {
 }
 
 const runSyncCommand = async (argv: string[]) => {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log(renderSyncUsage())
+    return 0
+  }
   let parsed: ReturnType<typeof parseSyncArgs>
 
   try {
@@ -576,8 +698,8 @@ const runSyncCommand = async (argv: string[]) => {
   }
 
   const limit = Number(parsed.limit || '500')
-  if (!Number.isFinite(limit) || limit <= 0) {
-    console.error('同步期数必须是正整数。')
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    console.error('同步期数必须是 1-1000 的整数。')
     return 1
   }
 
@@ -616,7 +738,9 @@ const runSyncCommand = async (argv: string[]) => {
     return 1
   }
 
-  console.log('\n同步完成。使用 LOTTERYMCP_DATA_MODE=official 可让 MCP 服务读取本地官方数据缓存。')
+  console.log('\n同步完成。下一步可运行:')
+  console.log('  lotterymcp init --mode official')
+  console.log('  lotterymcp predict --periods 200 --tickets 10 --play mixed')
   return 0
 }
 
@@ -687,11 +811,11 @@ const main = async () => {
   }
 
   if (command === 'init') {
-    return promptForConfig()
+    return promptForConfig(args.slice(1))
   }
 
   if (command === 'doctor') {
-    return runDoctor()
+    return runDoctor(args.slice(1))
   }
 
   if (command === 'login') {

@@ -7,13 +7,15 @@
 <text x="174" y="82" fill="#f3f5f7" font-size="29" font-family="Consolas, Microsoft YaHei UI, monospace">Lotterymcp 排列3菜单</text>
 <text x="72" y="132" fill="#7ee787" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">$ npx --yes lotterymcp@latest</text>
 <line x1="64" y1="154" x2="1436" y2="154" stroke="#2a2e35"/>
-<text x="72" y="194" fill="#f2cc60" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">支持彩种: 排列3 (pl3)</text>
-<text x="72" y="232" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">1. 注册/登录并获取 Token</text>
-<text x="72" y="270" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">2. 配置接口地址、Token、默认期数</text>
-<text x="72" y="308" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">3. 生成 MCP 配置片段</text>
-<text x="72" y="346" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">4. 检查配置、缓存和预测账本</text>
-<text x="72" y="384" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">5. 启动 MCP 服务</text>
-<text x="72" y="422" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">6. 生成排列3预测与回测</text>
-<text x="72" y="460" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">7. 同步公开开奖数据</text>
-<text x="72" y="498" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">0. 退出</text>
+<text x="72" y="194" fill="#f2cc60" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">请选择操作：</text>
+<text x="72" y="230" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  1. 注册/登录并获取 Token</text>
+<text x="72" y="266" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  2. 配置数据模式和默认期数</text>
+<text x="72" y="302" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  3. 生成 MCP 配置片段</text>
+<text x="72" y="338" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  4. 检查当前配置和网站连通性</text>
+<text x="72" y="374" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  5. 启动 MCP 服务</text>
+<text x="72" y="410" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  6. 生成排列3预测与回测</text>
+<text x="72" y="446" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  7. 同步官方公开开奖数据</text>
+<text x="72" y="482" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  0. 退出</text>
+<text x="72" y="536" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">请输入数字：</text>
+<text x="72" y="572" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">已退出。</text>
 </svg>

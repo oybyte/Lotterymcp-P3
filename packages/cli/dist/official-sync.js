@@ -79,13 +79,17 @@ const normalizeZhcwRows = (payload) => {
     });
 };
 const validateSyncRecords = (records) => {
-    const normalized = normalizePl3Records(records);
-    for (const record of normalized) {
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(record.drawDate) || !Number.isFinite(Date.parse(record.drawDate))) {
-            throw new Error(`排列3第 ${record.period} 期的开奖日期无效: ${record.drawDate || '(空)'}`);
-        }
-    }
-    return normalized;
+    const sourceByPeriod = new Map();
+    records.forEach((record) => sourceByPeriod.set(String(record.period || '').trim(), record));
+    return normalizePl3Records(records).map((record) => {
+        const source = sourceByPeriod.get(record.period);
+        return {
+            ...record,
+            ...(typeof source?.source === 'string' ? { source: source.source } : {}),
+            ...(typeof source?.sourceUrl === 'string' ? { sourceUrl: source.sourceUrl } : {}),
+            ...(typeof source?.rawProvider === 'string' ? { rawProvider: source.rawProvider } : {}),
+        };
+    });
 };
 const fetchPaginated = async (limit, fetchPage, pageDelayMs) => {
     const records = [];
@@ -152,8 +156,7 @@ export const fetchOfficialPl3Records = async (limit, fetchImpl = fetch) => {
         const records = await fetchSportteryRecords(normalizedLimit, fetchImpl);
         if (records.length === 0)
             throw new Error('中国体彩网没有返回可用记录');
-        validateSyncRecords(records);
-        return records;
+        return validateSyncRecords(records).reverse();
     }
     catch (error) {
         primaryError = error;
@@ -162,8 +165,7 @@ export const fetchOfficialPl3Records = async (limit, fetchImpl = fetch) => {
         const records = await fetchZhcwRecords(normalizedLimit, fetchImpl);
         if (records.length === 0)
             throw new Error('中彩网没有返回可用记录');
-        validateSyncRecords(records);
-        return records;
+        return validateSyncRecords(records).reverse();
     }
     catch (fallbackError) {
         throw new Error(`排列3公开数据源均不可用。体彩网: ${primaryError instanceof Error ? primaryError.message : String(primaryError)}；` +

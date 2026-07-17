@@ -5,10 +5,11 @@ import { createServer } from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js')
+const configEntryUrl = pathToFileURL(path.join(repoRoot, 'packages', 'cli', 'dist', 'config.js')).href
 
 const startJsonServer = async (handler) => {
   const server = createServer(handler)
@@ -71,7 +72,7 @@ test('cli --help exits successfully and shows readable Chinese help', () => {
   assert.match(result.stdout, /使用方法:/)
   assert.match(result.stdout, /启动 MCP stdio 服务/)
   assert.match(result.stdout, /生成排列3候选与 walk-forward 回测/)
-  assert.match(result.stdout, /先注册\/登录官网并获取 Token/)
+  assert.match(result.stdout, /remote 模式配置官网 Token；official 模式同步公开排列3数据/)
   assert.match(result.stdout, /npx --yes lotterymcp@latest/)
   assert.equal(result.stderr, '')
 })
@@ -92,7 +93,7 @@ test('cli without args shows the startup menu in Chinese and can exit cleanly', 
   assert.ok(result.stdout.includes('Lotterymcp'))
   assert.match(result.stdout, /请选择操作：/)
   assert.match(result.stdout, /1\.\s+注册\/登录并获取 Token/)
-  assert.match(result.stdout, /2\.\s+配置接口地址、Token、默认期数/)
+  assert.match(result.stdout, /2\.\s+配置数据模式和默认期数/)
   assert.match(result.stdout, /3\.\s+生成 MCP 配置片段/)
   assert.match(result.stdout, /4\.\s+检查当前配置和网站连通性/)
   assert.match(result.stdout, /5\.\s+启动 MCP 服务/)
@@ -129,6 +130,71 @@ test('cli init saves API base URL, token, and default periods', () => {
     dataDir: '.lotterymcp-data',
   })
   assert.equal(result.stderr, '')
+})
+
+test('cli init configures official mode without a token', async () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-official-config-'))
+  const configPath = path.join(tempDir, 'cp.config.json')
+  const dataDir = path.join(tempDir, 'data')
+  const result = await runCli([
+    'init', '--mode', 'official', '--data-dir', dataDir, '--periods', '200',
+  ], {
+    env: {
+      NBCP_CONFIG_PATH: configPath,
+      NEUXSBOT_TOKEN: 'environment-token-must-not-be-saved',
+    },
+  })
+
+  assert.equal(result.status, 0)
+  assert.match(result.stdout, /DATA_MODE: official/)
+  assert.doesNotMatch(result.stdout, /Token 是敏感信息|environment-token/)
+  const saved = JSON.parse(readFileSync(configPath, 'utf8'))
+  assert.equal(saved.dataMode, 'official')
+  assert.equal(saved.dataDir, dataDir)
+  assert.equal(saved.defaultPeriods, '200')
+  assert.equal(saved.token, '')
+})
+
+test('cli init supports named remote options', async () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-remote-config-'))
+  const configPath = path.join(tempDir, 'cp.config.json')
+  const result = await runCli([
+    'init', '--mode', 'remote', '--api-base-url', 'https://api.example.com',
+    '--token', 'named-token', '--periods', '188',
+  ], { env: { NBCP_CONFIG_PATH: configPath } })
+
+  assert.equal(result.status, 0)
+  const saved = JSON.parse(readFileSync(configPath, 'utf8'))
+  assert.equal(saved.dataMode, 'remote')
+  assert.equal(saved.apiBaseUrl, 'https://api.example.com')
+  assert.equal(saved.token, 'named-token')
+  assert.equal(saved.defaultPeriods, '188')
+})
+
+test('official MCP snippet does not include remote credentials', async () => {
+  const { renderMcpConfigSnippet } = await import(configEntryUrl)
+  const snippet = JSON.parse(renderMcpConfigSnippet({
+    apiBaseUrl: 'https://api.example.com',
+    token: 'must-not-leak',
+    defaultPeriods: '200',
+    dataMode: 'official',
+    dataDir: '.lotterymcp-data',
+  }))
+  const env = snippet.mcpServers.lotterymcp.env
+  assert.equal(env.LOTTERYMCP_DATA_MODE, 'official')
+  assert.equal(env.LOTTERYMCP_DATA_DIR, '.lotterymcp-data')
+  assert.equal(env.NEUXSBOT_API_BASE_URL, undefined)
+  assert.equal(env.NEUXSBOT_TOKEN, undefined)
+})
+
+test('cli subcommands expose focused help without hidden aliases', async () => {
+  for (const command of ['init', 'predict', 'sync', 'doctor']) {
+    const result = await runCli([command, '--help'])
+    assert.equal(result.status, 0, command)
+    assert.match(result.stdout, /用法:/)
+    assert.doesNotMatch(result.stdout, /--all|pl3_markov/)
+    assert.equal(result.stderr, '')
+  }
 })
 
 test('cli doctor performs a real health check and reports success in Chinese', async () => {
@@ -265,6 +331,7 @@ test('cli sync defaults to pl3 and writes official cache from a public-source co
 
     assert.equal(result.status, 0)
     assert.match(result.stdout, /同步完成/)
+    assert.match(result.stdout, /lotterymcp init --mode official/)
     const saved = JSON.parse(readFileSync(path.join(tempDir, 'pl3.json'), 'utf8'))
     assert.equal(saved.provider, 'official')
     assert.equal(saved.records.length, 2)
@@ -282,6 +349,14 @@ test('cli sync rejects non-pl3 official lottery types', async () => {
   assert.match(result.stderr, /未支持的官方彩种: fc3d/)
   assert.match(result.stdout, /支持彩种: pl3/)
   assert.doesNotMatch(result.stdout, /--all/)
+})
+
+test('cli sync enforces the P3 cache limit boundary', async () => {
+  for (const limit of ['1.5', '1001']) {
+    const result = await runCli(['sync', '--source', 'official', '--limit', limit])
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /同步期数必须是 1-1000 的整数/)
+  }
 })
 
 test('cli sync keeps --all as a hidden pl3 compatibility flag', async () => {

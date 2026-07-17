@@ -1,16 +1,18 @@
 export type Pl3PlayType = 'direct' | 'group3' | 'group6' | 'mixed';
 export type Pl3TicketPlayType = Exclude<Pl3PlayType, 'mixed'>;
+export declare const PL3_LOTTERY_TYPE: "pl3";
+export type Pl3LotteryType = typeof PL3_LOTTERY_TYPE;
 export type Pl3SourceRecord = {
-    lotteryType?: string;
-    period?: string | number;
-    drawDate?: string;
-    numbers?: string;
-    numbersList?: unknown[];
-    numbers_list?: unknown[];
+    lotteryType?: unknown;
+    period?: unknown;
+    drawDate?: unknown;
+    numbers?: unknown;
+    numbersList?: unknown;
+    numbers_list?: unknown;
     [key: string]: unknown;
 };
 export type Pl3Record = {
-    lotteryType: 'pl3';
+    lotteryType: Pl3LotteryType;
     period: string;
     drawDate: string;
     numbers: string;
@@ -23,7 +25,7 @@ export type Pl3PayoutConfig = {
     group6: number;
 };
 export type Pl3PredictionQuery = {
-    lotteryType?: string;
+    lotteryType?: Pl3LotteryType;
     periods?: number;
     tickets?: number;
     playType?: Pl3PlayType;
@@ -84,7 +86,7 @@ export type Pl3Settlement = {
 };
 export type Pl3PredictionResult = {
     predictionId: string;
-    lotteryType: 'pl3';
+    lotteryType: Pl3LotteryType;
     generatedAt: string;
     afterPeriod: string;
     target: 'next-draw';
@@ -136,6 +138,7 @@ export declare const PL3_MODEL_WEIGHTS: {
     readonly numberTypeFrequency: 0.05;
 };
 export declare const PL3_DEFAULT_PAYOUTS: Pl3PayoutConfig;
+export declare const isValidPl3DrawDate: (value: string) => boolean;
 export declare const normalizePl3Records: (records: readonly Pl3SourceRecord[]) => Pl3Record[];
 export declare const scorePl3TicketPools: (sourceRecords: readonly Pl3SourceRecord[]) => {
     direct: Pl3Ticket[];

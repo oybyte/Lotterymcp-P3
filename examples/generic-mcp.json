@@ -1,6 +1,6 @@
 ﻿{
   "mcpServers": {
-    "neuxsbot-cp": {
+    "lotterymcp": {
       "command": "npx",
       "args": ["-y", "lotterymcp@latest", "serve"],
       "env": {

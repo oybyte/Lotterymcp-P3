@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run docs:screenshots:check
+      - run: npm audit --omit=dev
+      - run: npm pack --dry-run --workspace lotterymcp-core --workspace lotterymcp-server --workspace neuxnbcp --workspace lotterymcp
+      - run: git diff --check
+
+  node20-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: |
+          set -euo pipefail
+          pack_dir="$(mktemp -d)"
+          app_dir="$pack_dir/app"
+          npm pack --pack-destination "$pack_dir" --workspace lotterymcp-core --workspace lotterymcp-server --workspace neuxnbcp --workspace lotterymcp
+          npm init --yes --prefix "$app_dir"
+          npm install --prefix "$app_dir" "$pack_dir/lotterymcp-core-0.3.0.tgz"
+          npm install --prefix "$app_dir" "$pack_dir/lotterymcp-server-0.3.0.tgz"
+          npm install --prefix "$app_dir" "$pack_dir/neuxnbcp-0.3.0.tgz"
+          npm install --prefix "$app_dir" "$pack_dir/lotterymcp-0.3.0.tgz"
+          node "$app_dir/node_modules/neuxnbcp/dist/index.js" --help

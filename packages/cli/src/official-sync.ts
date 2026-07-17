@@ -4,7 +4,7 @@ import {
   normalizePl3Records,
   settlePl3Predictions,
   writeJsonAtomically,
-  type OfficialLotteryRecord,
+  type Pl3DrawRecord,
   type Pl3SourceRecord,
 } from 'lotterymcp-core'
 
@@ -30,7 +30,7 @@ export type SyncOfficialFileOptions = {
 
 export type SyncOfficialPl3Result = {
   lotteryType: 'pl3'
-  records: OfficialLotteryRecord[]
+  records: Pl3DrawRecord[]
   outputPath: string
   sourceUrl: string
   warnings: string[]
@@ -94,7 +94,7 @@ const fetchPayload = async (
   }
 }
 
-const normalizeSportteryRows = (payload: any): OfficialLotteryRecord[] => {
+const normalizeSportteryRows = (payload: any): Pl3SourceRecord[] => {
   const rows = Array.isArray(payload?.value?.list) ? payload.value.list : []
   return rows.map((row: any) => {
     const numbersList = splitNumbers(row.lotteryDrawResult)
@@ -111,7 +111,7 @@ const normalizeSportteryRows = (payload: any): OfficialLotteryRecord[] => {
   })
 }
 
-const normalizeZhcwRows = (payload: any): OfficialLotteryRecord[] => {
+const normalizeZhcwRows = (payload: any): Pl3SourceRecord[] => {
   const rows = Array.isArray(payload?.data) ? payload.data : []
   return rows.map((row: any) => {
     const numbersList = [...splitNumbers(row.frontWinningNum), ...splitNumbers(row.backWinningNum)]
@@ -129,21 +129,25 @@ const normalizeZhcwRows = (payload: any): OfficialLotteryRecord[] => {
 }
 
 const validateSyncRecords = (records: readonly Pl3SourceRecord[]) => {
-  const normalized = normalizePl3Records(records)
-  for (const record of normalized) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(record.drawDate) || !Number.isFinite(Date.parse(record.drawDate))) {
-      throw new Error(`排列3第 ${record.period} 期的开奖日期无效: ${record.drawDate || '(空)'}`)
+  const sourceByPeriod = new Map<string, Pl3SourceRecord>()
+  records.forEach((record) => sourceByPeriod.set(String(record.period || '').trim(), record))
+  return normalizePl3Records(records).map<Pl3DrawRecord>((record) => {
+    const source = sourceByPeriod.get(record.period)
+    return {
+      ...record,
+      ...(typeof source?.source === 'string' ? { source: source.source } : {}),
+      ...(typeof source?.sourceUrl === 'string' ? { sourceUrl: source.sourceUrl } : {}),
+      ...(typeof source?.rawProvider === 'string' ? { rawProvider: source.rawProvider } : {}),
     }
-  }
-  return normalized
+  })
 }
 
 const fetchPaginated = async (
   limit: number,
-  fetchPage: (page: number, pageSize: number) => Promise<OfficialLotteryRecord[]>,
+  fetchPage: (page: number, pageSize: number) => Promise<Pl3SourceRecord[]>,
   pageDelayMs: number,
 ) => {
-  const records: OfficialLotteryRecord[] = []
+  const records: Pl3SourceRecord[] = []
   const fingerprints = new Set<string>()
   let page = 1
 
@@ -211,8 +215,7 @@ export const fetchOfficialPl3Records = async (
   try {
     const records = await fetchSportteryRecords(normalizedLimit, fetchImpl)
     if (records.length === 0) throw new Error('中国体彩网没有返回可用记录')
-    validateSyncRecords(records)
-    return records
+    return validateSyncRecords(records).reverse()
   } catch (error) {
     primaryError = error
   }
@@ -220,8 +223,7 @@ export const fetchOfficialPl3Records = async (
   try {
     const records = await fetchZhcwRecords(normalizedLimit, fetchImpl)
     if (records.length === 0) throw new Error('中彩网没有返回可用记录')
-    validateSyncRecords(records)
-    return records
+    return validateSyncRecords(records).reverse()
   } catch (fallbackError) {
     throw new Error(
       `排列3公开数据源均不可用。体彩网: ${primaryError instanceof Error ? primaryError.message : String(primaryError)}；` +

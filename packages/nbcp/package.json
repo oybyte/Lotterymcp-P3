@@ -1,6 +1,6 @@
 {
   "name": "lotterymcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "type": "module",
   "description": "Lotterymcp shortcut command for P3 history, prediction, and MCP access",
@@ -13,7 +13,7 @@
     "README.md"
   ],
   "dependencies": {
-    "neuxnbcp": "^0.2.0"
+    "neuxnbcp": "^0.3.0"
   },
   "engines": {
     "node": ">=20"
@@ -28,6 +28,13 @@
     "backtest"
   ],
   "homepage": "https://www.neuxsbot.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bbccoolly/Lotterymcp-P3.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bbccoolly/Lotterymcp-P3/issues"
+  },
   "publishConfig": {
     "access": "public"
   }

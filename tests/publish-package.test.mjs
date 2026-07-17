@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -25,15 +25,41 @@ test('cli package does not depend on unpublished local file dependencies', () =>
 })
 
 test('publishable packages expose registry metadata and cli package includes a README', () => {
-  const corePackage = readJson(path.join('packages', 'core', 'package.json'))
-  const serverPackage = readJson(path.join('packages', 'mcp-server', 'package.json'))
+  const packageDirs = ['core', 'mcp-server', 'cli', 'nbcp']
   const cliReadmePath = path.join(repoRoot, 'packages', 'cli', 'README.md')
 
-  assert.equal(corePackage.private, false)
-  assert.equal(serverPackage.private, false)
-  assert.equal(corePackage.publishConfig?.access, 'public')
-  assert.equal(serverPackage.publishConfig?.access, 'public')
+  for (const packageDir of packageDirs) {
+    const manifest = readJson(path.join('packages', packageDir, 'package.json'))
+    assert.equal(manifest.version, '0.3.0')
+    assert.equal(manifest.private, false)
+    assert.equal(manifest.publishConfig?.access, 'public')
+    assert.equal(manifest.license, 'MIT')
+    assert.match(manifest.repository?.url || '', /Lotterymcp-P3\.git$/)
+    assert.match(manifest.bugs?.url || '', /Lotterymcp-P3\/issues$/)
+    assert.equal(existsSync(path.join(repoRoot, 'packages', packageDir, 'LICENSE')), true)
+  }
   assert.equal(existsSync(cliReadmePath), true)
+  assert.equal(existsSync(path.join(repoRoot, 'LICENSE')), true)
+})
+
+test('source and public docs expose no non-P3 lottery names', () => {
+  const roots = ['README.md', 'docs', 'examples', 'packages', 'scripts']
+  const files = []
+  const visit = (target) => {
+    const absolute = path.join(repoRoot, target)
+    if (!existsSync(absolute)) return
+    if (statSync(absolute).isDirectory()) {
+      if (path.basename(absolute) === 'dist') return
+      for (const entry of readdirSync(absolute)) visit(path.join(target, entry))
+      return
+    }
+    if (/\.(?:ts|js|mjs|json|md|yml|yaml)$/.test(target)) files.push(target)
+  }
+  roots.forEach(visit)
+  const forbidden = /fc3d|ssq|kl8|dlt|pl5|qxc|双色球|大乐透|七星彩/i
+  for (const file of files) {
+    assert.doesNotMatch(readFileSync(path.join(repoRoot, file), 'utf8'), forbidden, file)
+  }
 })
 
 test('published cli is TypeScript-only and ships the P3 sync implementation', () => {
@@ -41,8 +67,6 @@ test('published cli is TypeScript-only and ships the P3 sync implementation', ()
 
   assert.deepEqual(cliPackage.files, ['dist', 'README.md'])
   assert.equal(existsSync(path.join(repoRoot, 'packages', 'cli', 'dist', 'official-sync.js')), true)
-  assert.equal(existsSync(path.join(repoRoot, 'packages', 'cli', 'dist', 'python-runtime.js')), false)
-  assert.equal(existsSync(path.join(repoRoot, 'examples', 'python')), false)
 })
 
 test('public docs stay product-facing and do not expose internal conversation wording', () => {

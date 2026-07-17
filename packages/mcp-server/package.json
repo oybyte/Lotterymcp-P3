@@ -1,6 +1,6 @@
 {
   "name": "lotterymcp-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "type": "module",
   "description": "Lotterymcp stdio server for P3 history and deterministic prediction",
@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "lotterymcp-core": "0.2.0",
+    "lotterymcp-core": "0.3.0",
     "zod": "^3.24.1"
   },
   "engines": {
@@ -25,10 +25,18 @@
     "mcp",
     "lottery",
     "pl3",
+    "p3",
     "neuxsbot",
     "server"
   ],
   "homepage": "https://www.neuxsbot.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bbccoolly/Lotterymcp-P3.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bbccoolly/Lotterymcp-P3/issues"
+  },
   "publishConfig": {
     "access": "public"
   }

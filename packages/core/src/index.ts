@@ -2,33 +2,49 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   PL3_DEFAULT_PERIODS,
+  PL3_LOTTERY_TYPE,
   PL3_MAX_PERIODS,
   PL3_MIN_RECORDS,
   Pl3PredictionError,
   getPl3PredictionLedgerSummary,
+  isValidPl3DrawDate,
+  normalizePl3Records,
   predictPl3,
   settlePl3Predictions,
   upsertPl3Prediction,
   type Pl3PayoutConfig,
   type Pl3PredictionQuery,
   type Pl3PredictionResult,
+  type Pl3LotteryType,
+  type Pl3Record,
   type Pl3SourceRecord,
 } from './pl3-prediction.js'
 
 export * from './pl3-prediction.js'
 
+/** @deprecated Provider selection is dynamic. Read meta.provider instead. */
 export const LOTTERY_MCP_PROVIDER = 'remote'
 
-export const LOTTERY_MCP_TOOLS = [
+export const PL3_DATA_TOOLS = [
   'lottery.latest',
   'lottery.history',
   'lottery.periods',
   'lottery.summary',
 ] as const
 
-export type LotteryMcpToolName = (typeof LOTTERY_MCP_TOOLS)[number]
+export const PL3_MCP_TOOLS = [...PL3_DATA_TOOLS, 'lottery.predict'] as const
+
+/** @deprecated Use PL3_DATA_TOOLS instead. */
+export const LOTTERY_MCP_TOOLS = PL3_DATA_TOOLS
+
+export type Pl3McpToolName = (typeof PL3_MCP_TOOLS)[number]
+export type Pl3DataToolName = (typeof PL3_DATA_TOOLS)[number]
+/** @deprecated Use Pl3McpToolName instead. */
+export type LotteryMcpToolName = Pl3McpToolName
 export type McpPlan = 'public' | 'member'
-export type LotteryDataMode = 'remote' | 'official'
+export type Pl3DataMode = 'remote' | 'official'
+/** @deprecated Use Pl3DataMode instead. */
+export type LotteryDataMode = Pl3DataMode
 
 export type McpMeta = {
   plan: McpPlan
@@ -58,15 +74,15 @@ export type McpHealthResponse = {
   auth?: {
     header?: string
   }
-  tools?: string[]
+  tools?: Pl3DataToolName[]
 }
 
-export type LotteryLatestQuery = {
-  lotteryType?: string
+export type Pl3LatestQuery = {
+  lotteryType?: Pl3LotteryType
 }
 
-export type LotteryHistoryQuery = {
-  lotteryType?: string
+export type Pl3HistoryQuery = {
+  lotteryType?: Pl3LotteryType
   period?: string
   fromDate?: string
   toDate?: string
@@ -74,21 +90,30 @@ export type LotteryHistoryQuery = {
   limit?: number
 }
 
-export type LotteryPeriodsQuery = {
-  lotteryType?: string
+export type Pl3PeriodsQuery = {
+  lotteryType?: Pl3LotteryType
   page?: number
   limit?: number
 }
 
-export type LotterySummaryQuery = {
-  lotteryType?: string
+export type Pl3SummaryQuery = {
+  lotteryType?: Pl3LotteryType
 }
 
+/** @deprecated Use Pl3LatestQuery instead. */
+export type LotteryLatestQuery = Pl3LatestQuery
+/** @deprecated Use Pl3HistoryQuery instead. */
+export type LotteryHistoryQuery = Pl3HistoryQuery
+/** @deprecated Use Pl3PeriodsQuery instead. */
+export type LotteryPeriodsQuery = Pl3PeriodsQuery
+/** @deprecated Use Pl3SummaryQuery instead. */
+export type LotterySummaryQuery = Pl3SummaryQuery
+
 export type LotteryMcpConfig = {
-  apiBaseUrl: string
-  token: string
+  apiBaseUrl?: string
+  token?: string
   defaultPeriods: string
-  dataMode?: LotteryDataMode
+  dataMode?: Pl3DataMode
   dataDir?: string
 }
 
@@ -96,10 +121,10 @@ export type LotteryMcpConfig = {
 export type NbcpConfig = LotteryMcpConfig
 
 export type LotteryMcpClientConfig = {
-  apiBaseUrl: string
+  apiBaseUrl?: string
   token?: string
   defaultPeriods?: string
-  dataMode?: LotteryDataMode
+  dataMode?: Pl3DataMode
   dataDir?: string
   fetchImpl?: typeof fetch
 }
@@ -109,10 +134,10 @@ export type LotteryMcpClient = {
   token: string
   defaultPeriods: string
   getHealth(): Promise<McpHealthResponse>
-  getLatest(query: LotteryLatestQuery): Promise<McpEnvelope<unknown>>
-  getHistory(query: LotteryHistoryQuery): Promise<McpEnvelope<unknown>>
-  getPeriods(query: LotteryPeriodsQuery): Promise<McpEnvelope<unknown>>
-  getSummary(query: LotterySummaryQuery): Promise<McpEnvelope<unknown>>
+  getLatest(query: Pl3LatestQuery): Promise<McpEnvelope<Pl3DrawRecord | null>>
+  getHistory(query: Pl3HistoryQuery): Promise<McpEnvelope<Pl3DrawRecord[]>>
+  getPeriods(query: Pl3PeriodsQuery): Promise<McpEnvelope<Pl3PeriodRecord[]>>
+  getSummary(query: Pl3SummaryQuery): Promise<McpEnvelope<Pl3Summary | null>>
 }
 
 export type LotteryDataProvider = Pick<
@@ -133,16 +158,24 @@ export type Pl3PredictionService = {
   getLedgerSummary(): Promise<{ total: number; pending: number; settled: number }>
 }
 
-export type OfficialLotteryRecord = {
-  lotteryType: string
-  period: string
-  drawDate: string
-  numbers: string
-  numbersList?: number[]
+export type Pl3DrawRecord = Pl3Record & {
   source?: string
   sourceUrl?: string
-  [key: string]: unknown
+  rawProvider?: string
 }
+
+export type Pl3PeriodRecord = Pick<Pl3DrawRecord, 'lotteryType' | 'period' | 'drawDate'>
+
+export type Pl3Summary = {
+  lotteryType: Pl3LotteryType
+  total: number
+  latestPeriod: string | null
+  latestDrawDate: string | null
+  dataDir?: string
+}
+
+/** @deprecated Use Pl3DrawRecord instead. */
+export type OfficialLotteryRecord = Pl3DrawRecord
 
 export type McpAction = {
   type?: string
@@ -180,7 +213,8 @@ export class McpApiError extends Error {
 
 const DEFAULT_PERIODS = '100'
 const DEFAULT_DATA_DIR = '.lotterymcp-data'
-export const SUPPORTED_LOTTERY_TYPE = 'pl3'
+/** @deprecated Use PL3_LOTTERY_TYPE instead. */
+export const SUPPORTED_LOTTERY_TYPE = PL3_LOTTERY_TYPE
 const RATE_LIMIT_RETRIES = 2
 const RATE_LIMIT_BASE_DELAY_MS = 1000
 const RATE_LIMIT_MAX_DELAY_MS = 5000
@@ -199,7 +233,7 @@ const getRateLimitDelayMs = (response: Response, attempt: number) => {
   return Math.min(RATE_LIMIT_BASE_DELAY_MS * 2 ** Math.max(attempt - 1, 0), RATE_LIMIT_MAX_DELAY_MS)
 }
 
-export const normalizeApiBaseUrl = (value: string) =>
+export const normalizeApiBaseUrl = (value: unknown) =>
   String(value || '')
     .trim()
     .replace(/\/+$/, '')
@@ -249,13 +283,13 @@ const createApiError = (statusCode: number, payload: any) =>
     data: payload,
   })
 
-const normalizeDataMode = (value: unknown): LotteryDataMode =>
+const normalizeDataMode = (value: unknown): Pl3DataMode =>
   String(value || '').trim().toLowerCase() === 'official' ? 'official' : 'remote'
 
-export const normalizeLotteryType = (value: unknown = SUPPORTED_LOTTERY_TYPE) => {
-  const lotteryType = String(value || SUPPORTED_LOTTERY_TYPE).trim().toLowerCase()
+export const normalizeLotteryType = (value: unknown = PL3_LOTTERY_TYPE) => {
+  const lotteryType = String(value || PL3_LOTTERY_TYPE).trim().toLowerCase()
 
-  if (lotteryType !== SUPPORTED_LOTTERY_TYPE) {
+  if (lotteryType !== PL3_LOTTERY_TYPE) {
     throw new McpApiError({
       statusCode: 400,
       code: 'LOTTERYMCP_ONLY_PL3_SUPPORTED',
@@ -263,7 +297,7 @@ export const normalizeLotteryType = (value: unknown = SUPPORTED_LOTTERY_TYPE) =>
     })
   }
 
-  return SUPPORTED_LOTTERY_TYPE
+  return PL3_LOTTERY_TYPE
 }
 
 const resolveOfficialDataDir = (value: unknown) => {
@@ -281,7 +315,47 @@ const normalizePage = (value: unknown) => {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1
 }
 
-const readOfficialCache = async (dataDir: string, lotteryType: string) => {
+const toPl3ValidationApiError = (error: unknown, context: string, statusCode = 422) => {
+  if (error instanceof McpApiError) return error
+  if (error instanceof Pl3PredictionError) {
+    return new McpApiError({
+      statusCode: error.code === 'LOTTERYMCP_ONLY_PL3_SUPPORTED' ? 400 : statusCode,
+      code: error.code,
+      message: `${context}: ${error.message}`,
+      data: error.details,
+    })
+  }
+  return new McpApiError({
+    statusCode,
+    code: 'LOTTERYMCP_PL3_INVALID_RECORDS',
+    message: `${context}: ${error instanceof Error ? error.message : String(error)}`,
+    data: error,
+  })
+}
+
+const normalizePl3DrawRecords = (records: readonly Pl3SourceRecord[], context: string): Pl3DrawRecord[] => {
+  try {
+    const sourceByPeriod = new Map<string, Record<string, unknown>>()
+    for (const source of records) {
+      if (source && typeof source === 'object') {
+        sourceByPeriod.set(String(source.period || '').trim(), source as Record<string, unknown>)
+      }
+    }
+    return normalizePl3Records(records).map((record) => {
+      const source = sourceByPeriod.get(record.period)
+      return {
+        ...record,
+        ...(typeof source?.source === 'string' ? { source: source.source } : {}),
+        ...(typeof source?.sourceUrl === 'string' ? { sourceUrl: source.sourceUrl } : {}),
+        ...(typeof source?.rawProvider === 'string' ? { rawProvider: source.rawProvider } : {}),
+      }
+    })
+  } catch (error) {
+    throw toPl3ValidationApiError(error, context)
+  }
+}
+
+const readOfficialCache = async (dataDir: string, lotteryType: Pl3LotteryType) => {
   const normalizedLotteryType = normalizeLotteryType(lotteryType)
 
   const cachePath = path.join(dataDir, `${normalizedLotteryType}.json`)
@@ -310,26 +384,20 @@ const readOfficialCache = async (dataDir: string, lotteryType: string) => {
     })
   }
 
-  return records
-    .map((record) => ({
-      ...(record && typeof record === 'object' ? record : {}),
-      lotteryType: String(record?.lotteryType || normalizedLotteryType),
-      period: String(record?.period || ''),
-      drawDate: String(record?.drawDate || ''),
-      numbers: String(record?.numbers || ''),
-      numbersList: Array.isArray(record?.numbersList)
-        ? record.numbersList.map((item: unknown) => Number(item)).filter((item: number) => Number.isFinite(item))
-        : String(record?.numbers || '')
-            .split(/[,\s]+/)
-            .filter(Boolean)
-            .map((item) => Number(item))
-            .filter((item) => Number.isFinite(item)),
-    }))
-    .filter((record) => record.period)
-    .sort((a, b) => String(b.period).localeCompare(String(a.period)))
+  try {
+    return normalizePl3DrawRecords(records as Pl3SourceRecord[], '排列3官方数据缓存格式无效').reverse()
+  } catch (error) {
+    if (error instanceof McpApiError && error.code === 'LOTTERYMCP_ONLY_PL3_SUPPORTED') throw error
+    throw new McpApiError({
+      statusCode: 422,
+      code: error instanceof McpApiError ? error.code : 'LOTTERYMCP_OFFICIAL_CACHE_INVALID',
+      message: error instanceof Error ? error.message : `${normalizedLotteryType} 的官方数据缓存格式无效。`,
+      data: { cachePath },
+    })
+  }
 }
 
-const filterOfficialRecords = (records: OfficialLotteryRecord[], query: LotteryHistoryQuery) => {
+const filterOfficialRecords = (records: Pl3DrawRecord[], query: Pl3HistoryQuery) => {
   const period = String(query.period || '').trim()
   const fromDate = String(query.fromDate || '').trim()
   const toDate = String(query.toDate || '').trim()
@@ -373,10 +441,10 @@ export const createOfficialLocalProvider = (
       transport: 'local-json',
       provider: 'official',
       dataDir,
-      tools: [...LOTTERY_MCP_TOOLS],
+      tools: [...PL3_DATA_TOOLS],
     }),
     getLatest: async (query) => {
-      const records = await readOfficialCache(dataDir, query.lotteryType || SUPPORTED_LOTTERY_TYPE)
+      const records = await readOfficialCache(dataDir, query.lotteryType || PL3_LOTTERY_TYPE)
       return {
         data: records[0] || null,
         meta: createMeta(),
@@ -401,7 +469,7 @@ export const createOfficialLocalProvider = (
       }
     },
     getPeriods: async (query) => {
-      const records = await readOfficialCache(dataDir, query.lotteryType || SUPPORTED_LOTTERY_TYPE)
+      const records = await readOfficialCache(dataDir, query.lotteryType || PL3_LOTTERY_TYPE)
       const page = normalizePage(query.page)
       const limit = normalizeLimit(query.limit, fallbackLimit)
       const offset = (page - 1) * limit
@@ -461,6 +529,75 @@ export const formatMcpApiError = (error: unknown) => {
   }
 
   return lines.join('\n')
+}
+
+const invalidRemoteResponse = (message: string, data: unknown) =>
+  new McpApiError({
+    statusCode: 502,
+    code: 'LOTTERYMCP_PL3_INVALID_REMOTE_RESPONSE',
+    message: `排列3远端响应无效: ${message}`,
+    data,
+  })
+
+const normalizeRemoteEnvelope = <T>(
+  payload: unknown,
+  normalizeData: (value: unknown) => T,
+): McpEnvelope<T> => {
+  if (!payload || typeof payload !== 'object') {
+    throw invalidRemoteResponse('响应不是对象。', payload)
+  }
+  const envelope = payload as { data?: unknown; meta?: unknown }
+  if (!envelope.meta || typeof envelope.meta !== 'object') {
+    throw invalidRemoteResponse('缺少 meta 对象。', payload)
+  }
+  try {
+    return {
+      data: normalizeData(envelope.data),
+      meta: envelope.meta as McpMeta,
+    }
+  } catch (error) {
+    if (error instanceof McpApiError && error.code === 'LOTTERYMCP_PL3_INVALID_REMOTE_RESPONSE') throw error
+    throw invalidRemoteResponse(error instanceof Error ? error.message : String(error), payload)
+  }
+}
+
+const normalizeRemoteDraw = (value: unknown): Pl3DrawRecord => {
+  if (!value || typeof value !== 'object') throw new Error('开奖记录不是对象。')
+  return normalizePl3DrawRecords([value as Pl3SourceRecord], '排列3远端开奖记录无效')[0]!
+}
+
+const normalizeRemotePeriods = (value: unknown): Pl3PeriodRecord[] => {
+  if (!Array.isArray(value)) throw new Error('期号数据不是数组。')
+  return value.map((item) => {
+    if (!item || typeof item !== 'object') throw new Error('期号记录不是对象。')
+    const source = item as Record<string, unknown>
+    const lotteryType = normalizeLotteryType(source.lotteryType)
+    const period = String(source.period || '').trim()
+    const drawDate = String(source.drawDate || '').trim().slice(0, 10)
+    if (!/^\d{5,12}$/.test(period)) throw new Error(`无效期号: ${period || '(空)'}`)
+    if (!isValidPl3DrawDate(drawDate)) throw new Error(`第 ${period} 期的开奖日期无效。`)
+    return { lotteryType, period, drawDate }
+  })
+}
+
+const normalizeRemoteSummary = (value: unknown): Pl3Summary | null => {
+  if (value === null) return null
+  if (!value || typeof value !== 'object') throw new Error('摘要不是对象。')
+  const source = value as Record<string, unknown>
+  const lotteryType = normalizeLotteryType(source.lotteryType)
+  const total = Number(source.total)
+  if (!Number.isInteger(total) || total < 0) throw new Error('摘要 total 必须是非负整数。')
+  const latestPeriod = source.latestPeriod == null ? null : String(source.latestPeriod)
+  const latestDrawDate = source.latestDrawDate == null ? null : String(source.latestDrawDate).slice(0, 10)
+  if (latestPeriod !== null && !/^\d{5,12}$/.test(latestPeriod)) throw new Error('摘要最新期号无效。')
+  if (latestDrawDate !== null && !isValidPl3DrawDate(latestDrawDate)) throw new Error('摘要最新开奖日期无效。')
+  return {
+    lotteryType,
+    total,
+    latestPeriod,
+    latestDrawDate,
+    ...(typeof source.dataDir === 'string' ? { dataDir: source.dataDir } : {}),
+  }
 }
 
 export const createLotteryMcpClient = (
@@ -544,22 +681,25 @@ export const createLotteryMcpClient = (
     token,
     defaultPeriods,
     getHealth: () => request<McpHealthResponse>('health'),
-    getLatest: async (query) => request<McpEnvelope<unknown>>('lottery/latest', {
-      ...query,
-      lotteryType: normalizeLotteryType(query.lotteryType),
-    }),
-    getHistory: async (query) => request<McpEnvelope<unknown>>('lottery/history', {
-      ...query,
-      lotteryType: normalizeLotteryType(query.lotteryType),
-    }),
-    getPeriods: async (query) => request<McpEnvelope<unknown>>('lottery/periods', {
-      ...query,
-      lotteryType: normalizeLotteryType(query.lotteryType),
-    }),
-    getSummary: async (query) => request<McpEnvelope<unknown>>('lottery/summary', {
-      ...query,
-      lotteryType: normalizeLotteryType(query.lotteryType),
-    }),
+    getLatest: async (query) => normalizeRemoteEnvelope(
+      await request<unknown>('lottery/latest', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }),
+      (value) => value === null ? null : normalizeRemoteDraw(value),
+    ),
+    getHistory: async (query) => normalizeRemoteEnvelope(
+      await request<unknown>('lottery/history', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }),
+      (value) => {
+        if (!Array.isArray(value)) throw new Error('历史数据不是数组。')
+        return normalizePl3DrawRecords(value as Pl3SourceRecord[], '排列3远端历史数据无效').reverse()
+      },
+    ),
+    getPeriods: async (query) => normalizeRemoteEnvelope(
+      await request<unknown>('lottery/periods', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }),
+      normalizeRemotePeriods,
+    ),
+    getSummary: async (query) => normalizeRemoteEnvelope(
+      await request<unknown>('lottery/summary', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }),
+      normalizeRemoteSummary,
+    ),
   }
 }
 
@@ -603,11 +743,11 @@ export const createPl3PredictionService = (
 
     while (records.length < periods) {
       const envelope = await client.getHistory({
-        lotteryType: SUPPORTED_LOTTERY_TYPE,
+        lotteryType: PL3_LOTTERY_TYPE,
         page,
         limit: Math.min(pageSize, periods - records.length),
-      }) as McpEnvelope<unknown>
-      const rows = Array.isArray(envelope.data) ? envelope.data as Pl3SourceRecord[] : []
+      })
+      const rows: Pl3SourceRecord[] = envelope.data
       records.push(...rows)
       meta = envelope.meta
       if (rows.length === 0 || !envelope.meta?.hasMore) break
@@ -636,7 +776,7 @@ export const createPl3PredictionService = (
         await settleWithRecords(records)
         const prediction = predictPl3(records, {
           ...query,
-          lotteryType: SUPPORTED_LOTTERY_TYPE,
+          lotteryType: PL3_LOTTERY_TYPE,
           periods,
           payouts: { ...(config.payouts || {}), ...(query.payouts || {}) },
         })

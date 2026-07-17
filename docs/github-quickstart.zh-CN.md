@@ -14,24 +14,29 @@ npx --yes lotterymcp@latest
 npm i -g lotterymcp
 ```
 
-## 使用公开数据
+## Remote 模式
 
 ```bash
-lotterymcp sync --source official --limit 500
+lotterymcp init --mode remote --api-base-url https://www.neuxsbot.com --token YOUR_TOKEN --periods 200
+lotterymcp doctor
+lotterymcp predict --periods 200 --tickets 10 --play mixed
 ```
 
-设置 `LOTTERYMCP_DATA_MODE=official` 和可选的 `LOTTERYMCP_DATA_DIR` 后，MCP 与 CLI 都读取本地缓存。
+## Official 模式
+
+```bash
+lotterymcp init --mode official --data-dir .lotterymcp-data --periods 200
+lotterymcp sync --source official --limit 500
+lotterymcp doctor
+lotterymcp predict --periods 200 --tickets 10 --play mixed
+```
+
+official 模式不需要 Token。配置会保存到用户目录，MCP 与 CLI 都读取 `.lotterymcp-data/pl3.json`。
 
 ## 预测和回测
 
 ```bash
 lotterymcp predict --periods 200 --tickets 10 --play mixed
-```
-
-兼容命令：
-
-```bash
-lotterymcp analyze pl3 --periods 200 --tickets 10
 ```
 
 候选分数不是中奖概率，历史回测不代表未来收益。

@@ -239,6 +239,68 @@ test('official local provider reports a clear error when cache is missing', asyn
   )
 })
 
+test('official local provider rejects non-pl3 and malformed cache records', async () => {
+  const { McpApiError, createLotteryMcpClient } = await import(coreEntryUrl)
+  const valid = {
+    lotteryType: 'pl3',
+    period: '2026001',
+    drawDate: '2026-01-01',
+    numbers: '1,2,3',
+  }
+  const cases = [
+    { records: [{ ...valid, lotteryType: 'fc3d' }], code: 'LOTTERYMCP_ONLY_PL3_SUPPORTED' },
+    { records: [{ ...valid, numbers: '1,2' }], code: 'LOTTERYMCP_PL3_INVALID_NUMBERS' },
+    { records: [{ ...valid, drawDate: '2026-02-30' }], code: 'LOTTERYMCP_PL3_INVALID_DRAW_DATE' },
+    {
+      records: [valid, { ...valid, numbers: '9,8,7' }],
+      code: 'LOTTERYMCP_PL3_DUPLICATE_PERIOD',
+    },
+  ]
+
+  for (const [index, fixture] of cases.entries()) {
+    const dataDir = mkdtempSync(path.join(os.tmpdir(), `lotterymcp-invalid-cache-${index}-`))
+    writeFileSync(path.join(dataDir, 'pl3.json'), JSON.stringify({ records: fixture.records }), 'utf8')
+    const client = createLotteryMcpClient({ apiBaseUrl: '', dataMode: 'official', dataDir })
+    await assert.rejects(
+      () => client.getHistory({}),
+      (error) => error instanceof McpApiError && error.code === fixture.code,
+    )
+  }
+})
+
+test('remote provider rejects invalid P3 data from all four endpoints', async () => {
+  const { McpApiError, createLotteryMcpClient } = await import(coreEntryUrl)
+  const meta = { plan: 'member', provider: 'remote', requestLimit: null, generatedAt: '2026-01-01T00:00:00.000Z' }
+  const payloads = {
+    latest: { data: { lotteryType: 'fc3d', period: '2026001', drawDate: '2026-01-01', numbers: '1,2,3' }, meta },
+    history: { data: [{ lotteryType: 'pl3', period: '2026001', drawDate: '2026-01-01', numbers: '1,2' }], meta },
+    periods: { data: [{ lotteryType: 'pl3', period: '2026001', drawDate: '2026-02-30' }], meta },
+    summary: { data: { lotteryType: 'fc3d', total: 1, latestPeriod: '2026001', latestDrawDate: '2026-01-01' }, meta },
+  }
+  const client = createLotteryMcpClient({
+    apiBaseUrl: 'https://api.example.com',
+    token: 'test-token',
+    fetchImpl: async (input) => {
+      const endpoint = new URL(input).pathname.split('/').at(-1)
+      return new Response(JSON.stringify(payloads[endpoint]), { status: 200, headers: { 'content-type': 'application/json' } })
+    },
+  })
+
+  for (const operation of [
+    () => client.getLatest({}),
+    () => client.getHistory({}),
+    () => client.getPeriods({}),
+    () => client.getSummary({}),
+  ]) {
+    await assert.rejects(operation, (error) => {
+      assert.ok(error instanceof McpApiError)
+      assert.equal(error.statusCode, 502)
+      assert.equal(error.code, 'LOTTERYMCP_PL3_INVALID_REMOTE_RESPONSE')
+      return true
+    })
+  }
+})
+
 test('remote and official providers produce the same pl3 prediction for the same history', async () => {
   const records = Array.from({ length: 100 }, (_, index) => ({
     lotteryType: 'pl3',

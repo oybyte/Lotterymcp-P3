@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const serverEntryUrl = pathToFileURL(path.join(repoRoot, 'packages', 'mcp-server', 'dist', 'index.js')).href
+const coreEntryUrl = pathToFileURL(path.join(repoRoot, 'packages', 'core', 'dist', 'index.js')).href
 
 test('legacy server starter remains a thin compatibility alias', async () => {
   const { startLotteryMcpStdioServer, startNbcpStdioServer } = await import(serverEntryUrl)
@@ -25,6 +26,26 @@ test('mcp server exposes the five P3 tools through the public tool catalog', asy
     catalog.map((item) => item.name),
     ['lottery.latest', 'lottery.history', 'lottery.periods', 'lottery.summary', 'lottery.predict'],
   )
+})
+
+test('P3 tool constants and schemas expose only pl3', async () => {
+  const { PL3_DATA_TOOLS, PL3_MCP_TOOLS } = await import(coreEntryUrl)
+  const { MCP_SERVER_TOOLS, createLotteryToolCatalog } = await import(serverEntryUrl)
+  assert.deepEqual([...PL3_DATA_TOOLS], ['lottery.latest', 'lottery.history', 'lottery.periods', 'lottery.summary'])
+  assert.deepEqual([...MCP_SERVER_TOOLS], [...PL3_MCP_TOOLS])
+
+  const catalog = createLotteryToolCatalog({
+    getLatest: async () => ({ data: null, meta: {} }),
+    getHistory: async () => ({ data: [], meta: {} }),
+    getPeriods: async () => ({ data: [], meta: {} }),
+    getSummary: async () => ({ data: null, meta: {} }),
+  })
+  for (const tool of catalog) {
+    const schema = tool.inputSchema.lotteryType
+    assert.equal(schema.safeParse(undefined).success, true)
+    assert.equal(schema.safeParse('pl3').success, true)
+    assert.equal(schema.safeParse('fc3d').success, false)
+  }
 })
 
 test('predict tool defaults to pl3 and rejects other lottery types', async () => {

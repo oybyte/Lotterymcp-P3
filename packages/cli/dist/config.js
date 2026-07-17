@@ -36,10 +36,11 @@ export const saveLocalConfig = async (config) => {
 };
 export const validateConfig = (config) => {
     const missing = [];
-    if (!config.apiBaseUrl?.trim()) {
+    const dataMode = config.dataMode || DEFAULT_DATA_MODE;
+    if (dataMode === 'remote' && !config.apiBaseUrl?.trim()) {
         missing.push('API_BASE_URL');
     }
-    if ((config.dataMode || DEFAULT_DATA_MODE) !== 'official' && !config.token?.trim()) {
+    if (dataMode === 'remote' && !config.token?.trim()) {
         missing.push('TOKEN');
     }
     if (!config.defaultPeriods?.trim() || !/^\d+$/.test(config.defaultPeriods.trim())) {
@@ -58,16 +59,18 @@ export const maskToken = (token) => {
 };
 export const renderMcpConfigSnippet = (config) => JSON.stringify({
     mcpServers: {
-        'neuxsbot-cp': {
+        lotterymcp: {
             command: 'npx',
             args: ['-y', 'lotterymcp@latest', 'serve'],
             env: {
-                NEUXSBOT_API_BASE_URL: config.apiBaseUrl,
                 NEUXSBOT_DEFAULT_PERIODS: config.defaultPeriods,
                 LOTTERYMCP_DATA_MODE: config.dataMode || DEFAULT_DATA_MODE,
                 ...(config.dataMode === 'official'
                     ? { LOTTERYMCP_DATA_DIR: config.dataDir || DEFAULT_DATA_DIR }
-                    : { NEUXSBOT_TOKEN: config.token }),
+                    : {
+                        NEUXSBOT_API_BASE_URL: config.apiBaseUrl,
+                        NEUXSBOT_TOKEN: config.token,
+                    }),
             },
         },
     },

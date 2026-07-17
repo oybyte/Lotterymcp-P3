@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "lotterymcp": {
+      "command": "npx",
+      "args": ["-y", "lotterymcp@latest", "serve"],
+      "env": {
+        "LOTTERYMCP_DATA_MODE": "official",
+        "LOTTERYMCP_DATA_DIR": ".lotterymcp-data"
+      }
+    }
+  }
+}

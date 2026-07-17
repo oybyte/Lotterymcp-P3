@@ -24,20 +24,34 @@ Lotterymcp 是一个排列3（P3）历史数据、MCP 接入和本地确定性�
 - 对实际候选注数执行 walk-forward 回测，输出成本、名义奖金和历史 ROI。
 - 保存预测账本，并在下一期开奖进入缓存后自动结算。
 
-## 三步开始
+## 安装
 
-1. 临时运行 `npx --yes lotterymcp@latest`，或全局安装 `npm i -g lotterymcp`。
-2. 使用 Token 配置 remote 模式，或者先同步公开数据：
+```bash
+npx --yes lotterymcp@latest --help
+npm i -g lotterymcp
+```
 
-   ```bash
-   lotterymcp sync --source official --limit 500
-   ```
+## Remote 模式
 
-3. 生成预测与回测：
+```bash
+lotterymcp init --mode remote --api-base-url https://www.neuxsbot.com --token YOUR_TOKEN --periods 200
+lotterymcp doctor
+lotterymcp predict --periods 200 --tickets 10 --play mixed
+```
 
-   ```bash
-   lotterymcp predict --periods 200 --tickets 10 --play mixed
-   ```
+remote 模式使用用户自己的 NEUXSBOT Token 读取排列3数据。
+
+## Official 模式
+
+```bash
+lotterymcp init --mode official --data-dir .lotterymcp-data --periods 200
+lotterymcp sync --source official --limit 500
+lotterymcp doctor
+lotterymcp predict --periods 200 --tickets 10 --play mixed
+lotterymcp serve
+```
+
+official 模式不要求 Token，只读取公开同步或用户导入的本地排列3数据。
 
 ## 常用命令
 
@@ -48,10 +62,9 @@ lotterymcp serve
 lotterymcp sync --source official --limit 500
 lotterymcp sync --source file --file history.json --limit 500
 lotterymcp predict --periods 200 --tickets 10 --play mixed
-lotterymcp analyze pl3 --periods 200 --tickets 10
 ```
 
-`analyze pl3`、`analyze p3` 和 `analyze pl3_markov` 是 `predict` 的兼容入口，均使用同一个 TypeScript 核心。
+旧版 `analyze pl3` 和 `analyze p3` 仍作为隐藏兼容入口，统一调用同一个 P3 预测核心。
 
 ## MCP 配置
 
@@ -91,6 +104,22 @@ official 模式：
 
 official 模式只读取用户本地同步或导入的数据，不绕过 NEUXSBOT 授权。
 
+## P3 文件导入
+
+```json
+{
+  "records": [{
+    "lotteryType": "pl3",
+    "period": "2026177",
+    "drawDate": "2026-07-10",
+    "numbers": "8,1,2",
+    "numbersList": [8, 1, 2]
+  }]
+}
+```
+
+导入接受记录数组或 `{ "records": [...] }`。记录按期号排序并去重；同一期号数据冲突、日期无效、号码不是三个 `0..9` 数字或彩种不是 `pl3` 时会拒绝整批导入。单次最多保留 1000 期，新数据与旧缓存合并后再按 `--limit` 截取。
+
 ## MCP 工具
 
 - `lottery.latest`
@@ -123,3 +152,14 @@ official 模式只读取用户本地同步或导入的数据，不绕过 NEUXSBO
 - 默认缓存目录是 `.lotterymcp-data/`，预测账本为 `pl3-predictions.json`。
 - 默认单注成本为 2 元，名义奖金为直选 1040、组三 346、组六 173；可分别通过 `LOTTERYMCP_PL3_STAKE`、`LOTTERYMCP_PL3_PAYOUT_DIRECT`、`LOTTERYMCP_PL3_PAYOUT_GROUP3`、`LOTTERYMCP_PL3_PAYOUT_GROUP6` 覆盖。
 - 奖金、回报和 ROI 都是按配置计算的历史模拟，不构成收益承诺。
+
+## 开发验证
+
+```bash
+npm ci
+npm test
+npm run docs:screenshots:check
+npm audit --omit=dev
+```
+
+项目使用 [MIT License](LICENSE)。
