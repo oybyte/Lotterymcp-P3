@@ -5,7 +5,7 @@
 ```bash
 npx --yes lotterymcp@latest
 lotterymcp doctor
-lotterymcp sync --source official --lottery pl3 --limit 500
+lotterymcp sync --source official --limit 500
 lotterymcp sync --source file --file history.json --limit 500
 lotterymcp predict --periods 200 --tickets 10 --play mixed
 lotterymcp serve

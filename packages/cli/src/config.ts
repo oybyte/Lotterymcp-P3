@@ -2,13 +2,16 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-export type NbcpConfig = {
+export type LotteryMcpConfig = {
   apiBaseUrl: string
   token: string
   defaultPeriods: string
   dataMode?: 'remote' | 'official'
   dataDir?: string
 }
+
+/** @deprecated Use LotteryMcpConfig instead. */
+export type NbcpConfig = LotteryMcpConfig
 
 export const DEFAULT_API_BASE_URL = 'https://www.neuxsbot.com'
 export const DEFAULT_PERIODS = '100'
@@ -20,17 +23,17 @@ export const CONFIG_FILENAME = 'cp.config.json'
 export const getConfigPath = () =>
   process.env.NBCP_CONFIG_PATH || path.join(os.homedir(), CONFIG_DIRNAME, CONFIG_FILENAME)
 
-export const loadLocalConfig = async (): Promise<Partial<NbcpConfig>> => {
+export const loadLocalConfig = async (): Promise<Partial<LotteryMcpConfig>> => {
   try {
     const configText = await readFile(getConfigPath(), 'utf8')
-    const parsed = JSON.parse(configText) as Partial<NbcpConfig>
+    const parsed = JSON.parse(configText) as Partial<LotteryMcpConfig>
     return parsed && typeof parsed === 'object' ? parsed : {}
   } catch {
     return {}
   }
 }
 
-export const resolveConfig = async (): Promise<Partial<NbcpConfig>> => {
+export const resolveConfig = async (): Promise<Partial<LotteryMcpConfig>> => {
   const localConfig = await loadLocalConfig()
   const dataMode = process.env.LOTTERYMCP_DATA_MODE || localConfig.dataMode || DEFAULT_DATA_MODE
 
@@ -43,13 +46,13 @@ export const resolveConfig = async (): Promise<Partial<NbcpConfig>> => {
   }
 }
 
-export const saveLocalConfig = async (config: NbcpConfig) => {
+export const saveLocalConfig = async (config: LotteryMcpConfig) => {
   const configPath = getConfigPath()
   await mkdir(path.dirname(configPath), { recursive: true })
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
 }
 
-export const validateConfig = (config: Partial<NbcpConfig>) => {
+export const validateConfig = (config: Partial<LotteryMcpConfig>) => {
   const missing: string[] = []
 
   if (!config.apiBaseUrl?.trim()) {
@@ -79,7 +82,7 @@ export const maskToken = (token: string) => {
   return `${token.slice(0, 4)}***${token.slice(-4)}`
 }
 
-export const renderMcpConfigSnippet = (config: NbcpConfig) =>
+export const renderMcpConfigSnippet = (config: LotteryMcpConfig) =>
   JSON.stringify(
     {
       mcpServers: {

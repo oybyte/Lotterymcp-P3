@@ -156,4 +156,5 @@ export const startLotteryMcpStdioServer = async (options) => {
         transport,
     };
 };
+/** @deprecated Use startLotteryMcpStdioServer instead. */
 export const startNbcpStdioServer = startLotteryMcpStdioServer;

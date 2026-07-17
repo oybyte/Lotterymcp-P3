@@ -28,7 +28,7 @@ Lotterymcp 只提供排列3（`pl3`）数据和确定性预测回测。
 先同步排列3公开数据：
 
 ```bash
-lotterymcp sync --source official --lottery pl3 --limit 500
+lotterymcp sync --source official --limit 500
 ```
 
 如果公开网站限制自动请求，可导入规范化 JSON：

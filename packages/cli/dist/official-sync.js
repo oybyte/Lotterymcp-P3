@@ -1,10 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { normalizePl3Records, settlePl3Predictions, writeJsonAtomically, } from 'lotterymcp-core';
-export const OFFICIAL_LOTTERY_TYPES = ['pl3'];
-const OFFICIAL_LOTTERY = {
-    lotteryType: 'pl3',
-    label: '排列3',
+const OFFICIAL_PL3 = {
     gameNo: '35',
     fallbackLotteryId: '283',
     fallbackSourceUrl: 'https://www.zhcw.com/kjxx/pl3/',
@@ -60,7 +57,7 @@ const normalizeSportteryRows = (payload) => {
             numbers: numbersList.join(','),
             numbersList,
             source: 'official',
-            sourceUrl: OFFICIAL_LOTTERY.sourceUrl,
+            sourceUrl: OFFICIAL_PL3.sourceUrl,
             rawProvider: 'sporttery',
         };
     });
@@ -76,7 +73,7 @@ const normalizeZhcwRows = (payload) => {
             numbers: numbersList.join(','),
             numbersList,
             source: 'official',
-            sourceUrl: OFFICIAL_LOTTERY.fallbackSourceUrl,
+            sourceUrl: OFFICIAL_PL3.fallbackSourceUrl,
             rawProvider: 'zhcw',
         };
     });
@@ -119,13 +116,13 @@ const fetchSportteryRecords = async (limit, fetchImpl) => {
     return fetchPaginated(limit, async (page, pageSize) => {
         const url = new URL(baseUrl);
         url.search = new URLSearchParams({
-            gameNo: OFFICIAL_LOTTERY.gameNo,
+            gameNo: OFFICIAL_PL3.gameNo,
             provinceId: '0',
             pageSize: String(pageSize),
             isVerify: '1',
             pageNo: String(page),
         }).toString();
-        return normalizeSportteryRows(await fetchPayload(url, OFFICIAL_LOTTERY.referer, fetchImpl));
+        return normalizeSportteryRows(await fetchPayload(url, OFFICIAL_PL3.referer, fetchImpl));
     }, fetchImpl === fetch ? PAGE_DELAY_MS : 0);
 };
 const fetchZhcwRecords = async (limit, fetchImpl) => {
@@ -134,7 +131,7 @@ const fetchZhcwRecords = async (limit, fetchImpl) => {
         const url = new URL(baseUrl);
         url.search = new URLSearchParams({
             transactionType: '10001001',
-            lotteryId: OFFICIAL_LOTTERY.fallbackLotteryId,
+            lotteryId: OFFICIAL_PL3.fallbackLotteryId,
             issueCount: String(limit),
             startIssue: '',
             endIssue: '',
@@ -145,12 +142,10 @@ const fetchZhcwRecords = async (limit, fetchImpl) => {
             pageSize: String(pageSize),
             callback: 'callback',
         }).toString();
-        return normalizeZhcwRows(await fetchPayload(url, OFFICIAL_LOTTERY.fallbackSourceUrl, fetchImpl));
+        return normalizeZhcwRows(await fetchPayload(url, OFFICIAL_PL3.fallbackSourceUrl, fetchImpl));
     }, fetchImpl === fetch ? PAGE_DELAY_MS : 0);
 };
-export const fetchOfficialLotteryRecords = async (lotteryType, limit, fetchImpl = fetch) => {
-    if (lotteryType !== 'pl3')
-        throw new Error(`当前版本只支持排列3(pl3)，不支持 ${lotteryType}。`);
+export const fetchOfficialPl3Records = async (limit, fetchImpl = fetch) => {
     const normalizedLimit = normalizeLimit(limit);
     let primaryError;
     try {
@@ -197,7 +192,7 @@ const mergeRecords = (existing, incoming, limit) => {
         return {
             ...record,
             source: String(source?.source || 'official'),
-            sourceUrl: String(source?.sourceUrl || OFFICIAL_LOTTERY.sourceUrl),
+            sourceUrl: String(source?.sourceUrl || OFFICIAL_PL3.sourceUrl),
             rawProvider: String(source?.rawProvider || 'import'),
         };
     });
@@ -230,9 +225,9 @@ const writeCache = async (dataDir, incoming, limit, sourceUrl) => {
         settledCount: settlement.settledCount,
     };
 };
-export const syncOfficialLottery = async (options) => {
-    const records = await fetchOfficialLotteryRecords(options.lotteryType, options.limit, options.fetchImpl);
-    const sourceUrl = String(records[0]?.sourceUrl || OFFICIAL_LOTTERY.sourceUrl);
+export const syncOfficialPl3 = async (options) => {
+    const records = await fetchOfficialPl3Records(options.limit, options.fetchImpl);
+    const sourceUrl = String(records[0]?.sourceUrl || OFFICIAL_PL3.sourceUrl);
     return writeCache(options.dataDir, records, options.limit, sourceUrl);
 };
 export const syncOfficialFile = async (options) => {
@@ -250,4 +245,3 @@ export const syncOfficialFile = async (options) => {
     validateSyncRecords(records);
     return writeCache(options.dataDir, records, options.limit, filePath);
 };
-export const isOfficialLotteryType = (value) => value === 'pl3';

@@ -51,6 +51,7 @@ export declare const startLotteryMcpStdioServer: (options: LotteryMcpServerOptio
     toolCatalog: LotteryToolDefinition[];
     transport: StdioServerTransport;
 }>;
+/** @deprecated Use startLotteryMcpStdioServer instead. */
 export declare const startNbcpStdioServer: (options: LotteryMcpServerOptions) => Promise<{
     client: import("lotterymcp-core").LotteryMcpClient;
     server: McpServer;

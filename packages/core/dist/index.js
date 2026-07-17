@@ -119,7 +119,7 @@ const readOfficialCache = async (dataDir, lotteryType) => {
         throw new McpApiError({
             statusCode: 404,
             code: 'LOTTERYMCP_OFFICIAL_CACHE_MISSING',
-            message: '未找到排列3(pl3)官方数据缓存，请先运行 lotterymcp sync --source official --lottery pl3。',
+            message: '未找到排列3(pl3)官方数据缓存，请先运行 lotterymcp sync --source official。',
             data: { cachePath },
         });
     }
@@ -449,4 +449,5 @@ export const createPl3PredictionService = (client, config = {}) => {
         getLedgerSummary: () => getPl3PredictionLedgerSummary(ledgerPath),
     };
 };
+/** @deprecated Use createLotteryMcpClient instead. */
 export const createLotteryApiClient = createLotteryMcpClient;

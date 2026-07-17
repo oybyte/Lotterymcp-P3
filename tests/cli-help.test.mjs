@@ -231,7 +231,7 @@ test('cli serve stays silent on stdout when config is incomplete', () => {
   assert.match(result.stderr, /未检测到完整配置/)
 })
 
-test('cli sync writes official cache from a public-source compatible endpoint', async () => {
+test('cli sync defaults to pl3 and writes official cache from a public-source compatible endpoint', async () => {
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-sync-'))
   const server = await startJsonServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
@@ -256,7 +256,7 @@ test('cli sync writes official cache from a public-source compatible endpoint', 
   })
 
   try {
-    const result = await runCli(['sync', '--source', 'official', '--lottery', 'pl3', '--limit', '2'], {
+    const result = await runCli(['sync', '--source', 'official', '--limit', '2'], {
       env: {
         LOTTERYMCP_DATA_DIR: tempDir,
         LOTTERYMCP_SPORTTERY_API_URL: server.origin,
@@ -281,9 +281,10 @@ test('cli sync rejects non-pl3 official lottery types', async () => {
   assert.equal(result.status, 1)
   assert.match(result.stderr, /未支持的官方彩种: fc3d/)
   assert.match(result.stdout, /支持彩种: pl3/)
+  assert.doesNotMatch(result.stdout, /--all/)
 })
 
-test('cli sync --all only writes the pl3 official cache', async () => {
+test('cli sync keeps --all as a hidden pl3 compatibility flag', async () => {
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-sync-all-'))
   const server = await startJsonServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })

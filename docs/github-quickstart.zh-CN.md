@@ -17,7 +17,7 @@ npm i -g lotterymcp
 ## 使用公开数据
 
 ```bash
-lotterymcp sync --source official --lottery pl3 --limit 500
+lotterymcp sync --source official --limit 500
 ```
 
 设置 `LOTTERYMCP_DATA_MODE=official` 和可选的 `LOTTERYMCP_DATA_DIR` 后，MCP 与 CLI 都读取本地缓存。

@@ -8,11 +8,7 @@ import {
   type Pl3SourceRecord,
 } from 'lotterymcp-core'
 
-export type OfficialLotteryType = 'pl3'
-
-type OfficialLotteryConfig = {
-  lotteryType: OfficialLotteryType
-  label: string
+type OfficialPl3Config = {
   sourceUrl: string
   fallbackSourceUrl: string
   gameNo: string
@@ -20,8 +16,7 @@ type OfficialLotteryConfig = {
   referer: string
 }
 
-export type SyncOfficialLotteryOptions = {
-  lotteryType: OfficialLotteryType
+export type SyncOfficialPl3Options = {
   limit: number
   dataDir: string
   fetchImpl?: typeof fetch
@@ -33,8 +28,8 @@ export type SyncOfficialFileOptions = {
   dataDir: string
 }
 
-export type SyncOfficialLotteryResult = {
-  lotteryType: OfficialLotteryType
+export type SyncOfficialPl3Result = {
+  lotteryType: 'pl3'
   records: OfficialLotteryRecord[]
   outputPath: string
   sourceUrl: string
@@ -42,11 +37,7 @@ export type SyncOfficialLotteryResult = {
   settledCount: number
 }
 
-export const OFFICIAL_LOTTERY_TYPES: readonly OfficialLotteryType[] = ['pl3'] as const
-
-const OFFICIAL_LOTTERY: OfficialLotteryConfig = {
-  lotteryType: 'pl3',
-  label: '排列3',
+const OFFICIAL_PL3: OfficialPl3Config = {
   gameNo: '35',
   fallbackLotteryId: '283',
   fallbackSourceUrl: 'https://www.zhcw.com/kjxx/pl3/',
@@ -114,7 +105,7 @@ const normalizeSportteryRows = (payload: any): OfficialLotteryRecord[] => {
       numbers: numbersList.join(','),
       numbersList,
       source: 'official',
-      sourceUrl: OFFICIAL_LOTTERY.sourceUrl,
+      sourceUrl: OFFICIAL_PL3.sourceUrl,
       rawProvider: 'sporttery',
     }
   })
@@ -131,7 +122,7 @@ const normalizeZhcwRows = (payload: any): OfficialLotteryRecord[] => {
       numbers: numbersList.join(','),
       numbersList,
       source: 'official',
-      sourceUrl: OFFICIAL_LOTTERY.fallbackSourceUrl,
+      sourceUrl: OFFICIAL_PL3.fallbackSourceUrl,
       rawProvider: 'zhcw',
     }
   })
@@ -180,13 +171,13 @@ const fetchSportteryRecords = async (limit: number, fetchImpl: typeof fetch) => 
   return fetchPaginated(limit, async (page, pageSize) => {
     const url = new URL(baseUrl)
     url.search = new URLSearchParams({
-      gameNo: OFFICIAL_LOTTERY.gameNo,
+      gameNo: OFFICIAL_PL3.gameNo,
       provinceId: '0',
       pageSize: String(pageSize),
       isVerify: '1',
       pageNo: String(page),
     }).toString()
-    return normalizeSportteryRows(await fetchPayload(url, OFFICIAL_LOTTERY.referer, fetchImpl))
+    return normalizeSportteryRows(await fetchPayload(url, OFFICIAL_PL3.referer, fetchImpl))
   }, fetchImpl === fetch ? PAGE_DELAY_MS : 0)
 }
 
@@ -196,7 +187,7 @@ const fetchZhcwRecords = async (limit: number, fetchImpl: typeof fetch) => {
     const url = new URL(baseUrl)
     url.search = new URLSearchParams({
       transactionType: '10001001',
-      lotteryId: OFFICIAL_LOTTERY.fallbackLotteryId,
+      lotteryId: OFFICIAL_PL3.fallbackLotteryId,
       issueCount: String(limit),
       startIssue: '',
       endIssue: '',
@@ -207,16 +198,14 @@ const fetchZhcwRecords = async (limit: number, fetchImpl: typeof fetch) => {
       pageSize: String(pageSize),
       callback: 'callback',
     }).toString()
-    return normalizeZhcwRows(await fetchPayload(url, OFFICIAL_LOTTERY.fallbackSourceUrl, fetchImpl))
+    return normalizeZhcwRows(await fetchPayload(url, OFFICIAL_PL3.fallbackSourceUrl, fetchImpl))
   }, fetchImpl === fetch ? PAGE_DELAY_MS : 0)
 }
 
-export const fetchOfficialLotteryRecords = async (
-  lotteryType: OfficialLotteryType,
+export const fetchOfficialPl3Records = async (
   limit: number,
   fetchImpl: typeof fetch = fetch,
 ) => {
-  if (lotteryType !== 'pl3') throw new Error(`当前版本只支持排列3(pl3)，不支持 ${lotteryType}。`)
   const normalizedLimit = normalizeLimit(limit)
   let primaryError: unknown
   try {
@@ -266,7 +255,7 @@ const mergeRecords = (
     return {
       ...record,
       source: String(source?.source || 'official'),
-      sourceUrl: String(source?.sourceUrl || OFFICIAL_LOTTERY.sourceUrl),
+      sourceUrl: String(source?.sourceUrl || OFFICIAL_PL3.sourceUrl),
       rawProvider: String(source?.rawProvider || 'import'),
     }
   })
@@ -277,7 +266,7 @@ const writeCache = async (
   incoming: readonly Pl3SourceRecord[],
   limit: number,
   sourceUrl: string,
-): Promise<SyncOfficialLotteryResult> => {
+): Promise<SyncOfficialPl3Result> => {
   const normalizedLimit = normalizeLimit(limit)
   const resolvedDataDir = path.resolve(dataDir || DEFAULT_DATA_DIR)
   const outputPath = path.join(resolvedDataDir, 'pl3.json')
@@ -306,17 +295,17 @@ const writeCache = async (
   }
 }
 
-export const syncOfficialLottery = async (
-  options: SyncOfficialLotteryOptions,
-): Promise<SyncOfficialLotteryResult> => {
-  const records = await fetchOfficialLotteryRecords(options.lotteryType, options.limit, options.fetchImpl)
-  const sourceUrl = String(records[0]?.sourceUrl || OFFICIAL_LOTTERY.sourceUrl)
+export const syncOfficialPl3 = async (
+  options: SyncOfficialPl3Options,
+): Promise<SyncOfficialPl3Result> => {
+  const records = await fetchOfficialPl3Records(options.limit, options.fetchImpl)
+  const sourceUrl = String(records[0]?.sourceUrl || OFFICIAL_PL3.sourceUrl)
   return writeCache(options.dataDir, records, options.limit, sourceUrl)
 }
 
 export const syncOfficialFile = async (
   options: SyncOfficialFileOptions,
-): Promise<SyncOfficialLotteryResult> => {
+): Promise<SyncOfficialPl3Result> => {
   const filePath = path.resolve(options.filePath)
   let parsed: any
   try {
@@ -329,5 +318,3 @@ export const syncOfficialFile = async (
   validateSyncRecords(records)
   return writeCache(options.dataDir, records, options.limit, filePath)
 }
-
-export const isOfficialLotteryType = (value: string): value is OfficialLotteryType => value === 'pl3'

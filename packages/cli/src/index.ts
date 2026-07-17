@@ -13,7 +13,7 @@ import {
   type Pl3PlayType,
   type Pl3PredictionResult,
 } from 'lotterymcp-core'
-import { MCP_SERVER_TOOLS, MCP_SERVER_TRANSPORT, startNbcpStdioServer } from 'lotterymcp-server'
+import { MCP_SERVER_TOOLS, MCP_SERVER_TRANSPORT, startLotteryMcpStdioServer } from 'lotterymcp-server'
 import {
   DEFAULT_API_BASE_URL,
   DEFAULT_PERIODS,
@@ -23,16 +23,10 @@ import {
   resolveConfig,
   saveLocalConfig,
   validateConfig,
-  type NbcpConfig,
+  type LotteryMcpConfig,
 } from './config.js'
 import { renderNbcpBanner, shouldShowBanner } from './banner.js'
-import {
-  OFFICIAL_LOTTERY_TYPES,
-  isOfficialLotteryType,
-  syncOfficialFile,
-  syncOfficialLottery,
-  type OfficialLotteryType,
-} from './official-sync.js'
+import { syncOfficialFile, syncOfficialPl3 } from './official-sync.js'
 
 const WEBSITE_URL = 'https://www.neuxsbot.com'
 const MEMBER_CENTER_URL = 'https://www.neuxsbot.com/member'
@@ -92,7 +86,7 @@ const TOKEN_TEXT = `注册/登录并获取 Token:
   3. 当前版本仅支持排列3(pl3)数据。
 `
 
-const renderConfigSummary = (config: Partial<NbcpConfig>) => `当前配置:
+const renderConfigSummary = (config: Partial<LotteryMcpConfig>) => `当前配置:
   API_BASE_URL: ${config.apiBaseUrl || '(未设置)'}
   TOKEN: ${maskToken(config.token || '')}
   DEFAULT_PERIODS: ${config.defaultPeriods || '(未设置)'}
@@ -103,17 +97,15 @@ const renderConfigSummary = (config: Partial<NbcpConfig>) => `当前配置:
 const renderAnalyzeUsage = () => {
   return `用法:
   lotterymcp predict --periods 200 --tickets 10 --play mixed
-  lotterymcp analyze pl3 --periods 200 --tickets 10 --play mixed
 
 玩法: direct, group3, group6, mixed
-兼容别名: pl3, p3, pl3_markov
 `
 }
 
 const isPositiveInteger = (value: string) => /^\d+$/.test(value.trim())
 
 const buildNextConfig = (
-  currentConfig: Partial<NbcpConfig>,
+  currentConfig: Partial<LotteryMcpConfig>,
   input: {
     apiBaseUrl?: string
     token?: string
@@ -121,7 +113,7 @@ const buildNextConfig = (
     dataMode?: 'remote' | 'official'
     dataDir?: string
   },
-): NbcpConfig => ({
+): LotteryMcpConfig => ({
   apiBaseUrl: input.apiBaseUrl?.trim() || currentConfig.apiBaseUrl || DEFAULT_API_BASE_URL,
   token: input.token?.trim() || currentConfig.token || '',
   defaultPeriods: input.defaultPeriods?.trim() || currentConfig.defaultPeriods || DEFAULT_PERIODS,
@@ -129,7 +121,7 @@ const buildNextConfig = (
   dataDir: input.dataDir?.trim() || currentConfig.dataDir || '.lotterymcp-data',
 })
 
-const toResolvedConfig = (config: Partial<NbcpConfig>): NbcpConfig => ({
+const toResolvedConfig = (config: Partial<LotteryMcpConfig>): LotteryMcpConfig => ({
   apiBaseUrl: String(config.apiBaseUrl || '').trim(),
   token: String(config.token || '').trim(),
   defaultPeriods: String(config.defaultPeriods || '').trim(),
@@ -137,7 +129,7 @@ const toResolvedConfig = (config: Partial<NbcpConfig>): NbcpConfig => ({
   dataDir: String(config.dataDir || '.lotterymcp-data').trim(),
 })
 
-const persistConfig = async (nextConfig: NbcpConfig) => {
+const persistConfig = async (nextConfig: LotteryMcpConfig) => {
   if ((nextConfig.dataMode || 'remote') !== 'official' && !nextConfig.token.trim()) {
     console.error('Token 不能为空。')
     return 1
@@ -231,7 +223,7 @@ const getOfficialCacheSummary = (dataDir: string) => {
   }
 }
 
-const validateOfficialCache = (config: Partial<NbcpConfig>) => {
+const validateOfficialCache = (config: Partial<LotteryMcpConfig>) => {
   if (config.dataMode !== 'official') {
     return true
   }
@@ -241,7 +233,7 @@ const validateOfficialCache = (config: Partial<NbcpConfig>) => {
     return true
   }
 
-  console.error(`未找到排列3官方数据缓存，请先运行 lotterymcp sync --source official --lottery pl3。数据目录: ${dataDir}`)
+  console.error(`未找到排列3官方数据缓存，请先运行 lotterymcp sync --source official。数据目录: ${dataDir}`)
   return false
 }
 
@@ -255,7 +247,7 @@ const printConfigSnippet = async () => {
   }
 
   console.log('将下面这段 MCP 配置粘贴到支持 MCP 的 AI 工具中:\n')
-  console.log(renderMcpConfigSnippet(config as NbcpConfig))
+  console.log(renderMcpConfigSnippet(config as LotteryMcpConfig))
   return 0
 }
 
@@ -336,7 +328,7 @@ const runServe = async () => {
   }
 
   try {
-    await startNbcpStdioServer({
+    await startLotteryMcpStdioServer({
       ...toResolvedConfig(config),
       predictionPayouts: getPredictionPayouts(),
     })
@@ -508,18 +500,16 @@ const runPredictionMenu = async () => {
 }
 
 const renderSyncUsage = () => `用法:
+  lotterymcp sync --source official --limit 500
   lotterymcp sync --source official --lottery pl3 --limit 500
-  lotterymcp sync --source official --all --limit 500
   lotterymcp sync --source file --file history.json --limit 500
 
-支持彩种: ${OFFICIAL_LOTTERY_TYPES.join(', ')}
+支持彩种: pl3
 `
 
 const parseSyncArgs = (argv: string[]) => {
   const parsed: {
     source?: string
-    lottery?: OfficialLotteryType
-    all?: boolean
     limit?: string
     filePath?: string
   } = {}
@@ -538,16 +528,14 @@ const parseSyncArgs = (argv: string[]) => {
 
     if (arg === '--lottery') {
       const lotteryType = String(argv[index + 1] || '').trim().toLowerCase()
-      if (!isOfficialLotteryType(lotteryType)) {
+      if (lotteryType !== 'pl3') {
         throw new Error(`未支持的官方彩种: ${lotteryType || '(空)'}`)
       }
-      parsed.lottery = lotteryType
       index += 1
       continue
     }
 
     if (arg === '--all') {
-      parsed.all = true
       continue
     }
 
@@ -587,12 +575,6 @@ const runSyncCommand = async (argv: string[]) => {
     return 1
   }
 
-  if (source === 'official' && !parsed.all && !parsed.lottery) {
-    console.error('请使用 --lottery pl3 指定排列3，或使用 --all 同步排列3。')
-    console.log(renderSyncUsage())
-    return 1
-  }
-
   const limit = Number(parsed.limit || '500')
   if (!Number.isFinite(limit) || limit <= 0) {
     console.error('同步期数必须是正整数。')
@@ -621,25 +603,17 @@ const runSyncCommand = async (argv: string[]) => {
     }
   }
 
-  const lotteryTypes = parsed.all ? [...OFFICIAL_LOTTERY_TYPES] : [parsed.lottery as OfficialLotteryType]
-
-  for (const lotteryType of lotteryTypes) {
-    try {
-      console.log(`正在同步 ${lotteryType} 官方公开开奖数据...`)
-      const result = await syncOfficialLottery({
-        lotteryType,
-        limit,
-        dataDir,
-      })
-      console.log(`  写入: ${result.outputPath}`)
-      console.log(`  记录: ${result.records.length}`)
-      console.log(`  来源: ${result.sourceUrl}`)
-      result.warnings.forEach((warning) => console.warn(`  警告: ${warning}`))
-      if (result.settledCount > 0) console.log(`  已结算预测: ${result.settledCount}`)
-    } catch (error) {
-      console.error(`${lotteryType} 同步失败: ${error instanceof Error ? error.message : String(error)}`)
-      return 1
-    }
+  try {
+    console.log('正在同步 pl3 官方公开开奖数据...')
+    const result = await syncOfficialPl3({ limit, dataDir })
+    console.log(`  写入: ${result.outputPath}`)
+    console.log(`  记录: ${result.records.length}`)
+    console.log(`  来源: ${result.sourceUrl}`)
+    result.warnings.forEach((warning) => console.warn(`  警告: ${warning}`))
+    if (result.settledCount > 0) console.log(`  已结算预测: ${result.settledCount}`)
+  } catch (error) {
+    console.error(`pl3 同步失败: ${error instanceof Error ? error.message : String(error)}`)
+    return 1
   }
 
   console.log('\n同步完成。使用 LOTTERYMCP_DATA_MODE=official 可让 MCP 服务读取本地官方数据缓存。')
@@ -678,7 +652,7 @@ const runStartupMenu = async () => {
       case '6':
         return runPredictionMenu()
       case '7':
-        return runSyncCommand(['--source', 'official', '--all'])
+        return runSyncCommand(['--source', 'official'])
       case '0':
         console.log('已退出。')
         return 0

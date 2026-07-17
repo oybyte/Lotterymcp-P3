@@ -30,7 +30,7 @@ Lotterymcp 是一个排列3（P3）历史数据、MCP 接入和本地确定性�
 2. 使用 Token 配置 remote 模式，或者先同步公开数据：
 
    ```bash
-   lotterymcp sync --source official --lottery pl3 --limit 500
+   lotterymcp sync --source official --limit 500
    ```
 
 3. 生成预测与回测：
@@ -45,7 +45,7 @@ Lotterymcp 是一个排列3（P3）历史数据、MCP 接入和本地确定性�
 lotterymcp init
 lotterymcp doctor
 lotterymcp serve
-lotterymcp sync --source official --lottery pl3 --limit 500
+lotterymcp sync --source official --limit 500
 lotterymcp sync --source file --file history.json --limit 500
 lotterymcp predict --periods 200 --tickets 10 --play mixed
 lotterymcp analyze pl3 --periods 200 --tickets 10

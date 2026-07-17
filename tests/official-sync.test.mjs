@@ -22,7 +22,7 @@ const zhcwRows = (start, count) => Array.from({ length: count }, (_, index) => (
 }))
 
 test('official sync fetches multiple sporttery pages until the requested limit', async () => {
-  const { fetchOfficialLotteryRecords } = await import(syncEntryUrl)
+  const { fetchOfficialPl3Records } = await import(syncEntryUrl)
   const pages = []
   const pageSizes = []
   const fetchImpl = async (input) => {
@@ -38,7 +38,7 @@ test('official sync fetches multiple sporttery pages until the requested limit',
     })
   }
 
-  const records = await fetchOfficialLotteryRecords('pl3', 35, fetchImpl)
+  const records = await fetchOfficialPl3Records(35, fetchImpl)
 
   assert.equal(records.length, 35)
   assert.deepEqual(pages, [1, 2])
@@ -47,7 +47,7 @@ test('official sync fetches multiple sporttery pages until the requested limit',
 })
 
 test('official sync switches the whole request to zhcw after a sporttery failure', async () => {
-  const { fetchOfficialLotteryRecords } = await import(syncEntryUrl)
+  const { fetchOfficialPl3Records } = await import(syncEntryUrl)
   const providers = []
   const fetchImpl = async (input) => {
     const url = new URL(input)
@@ -65,7 +65,7 @@ test('official sync switches the whole request to zhcw after a sporttery failure
     })
   }
 
-  const records = await fetchOfficialLotteryRecords('pl3', 35, fetchImpl)
+  const records = await fetchOfficialPl3Records(35, fetchImpl)
 
   assert.equal(records.length, 35)
   assert.deepEqual(providers, ['sporttery', 'zhcw', 'zhcw'])
@@ -73,7 +73,7 @@ test('official sync switches the whole request to zhcw after a sporttery failure
 })
 
 test('repeated sporttery pages trigger the zhcw fallback', async () => {
-  const { fetchOfficialLotteryRecords } = await import(syncEntryUrl)
+  const { fetchOfficialPl3Records } = await import(syncEntryUrl)
   let fallbackCalls = 0
   const fetchImpl = async (input) => {
     const url = new URL(input)
@@ -87,7 +87,7 @@ test('repeated sporttery pages trigger the zhcw fallback', async () => {
     return new Response(`callback(${JSON.stringify({ data: zhcwRows(26187 - (page - 1) * 30, count) })})`, { status: 200 })
   }
 
-  const records = await fetchOfficialLotteryRecords('pl3', 35, fetchImpl)
+  const records = await fetchOfficialPl3Records(35, fetchImpl)
   assert.equal(records.length, 35)
   assert.equal(fallbackCalls, 2)
 })

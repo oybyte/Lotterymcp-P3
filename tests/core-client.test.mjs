@@ -9,6 +9,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const coreEntryUrl = pathToFileURL(path.join(repoRoot, 'packages', 'core', 'dist', 'index.js')).href
 
+test('legacy core client factory remains a thin compatibility alias', async () => {
+  const { createLotteryApiClient, createLotteryMcpClient } = await import(coreEntryUrl)
+  assert.equal(createLotteryApiClient, createLotteryMcpClient)
+})
+
 const startJsonServer = async (handler) => {
   const server = createServer(handler)
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))

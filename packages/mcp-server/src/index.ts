@@ -231,4 +231,5 @@ export const startLotteryMcpStdioServer = async (options: LotteryMcpServerOption
   }
 }
 
+/** @deprecated Use startLotteryMcpStdioServer instead. */
 export const startNbcpStdioServer = startLotteryMcpStdioServer

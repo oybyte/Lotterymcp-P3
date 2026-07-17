@@ -84,13 +84,16 @@ export type LotterySummaryQuery = {
   lotteryType?: string
 }
 
-export type NbcpConfig = {
+export type LotteryMcpConfig = {
   apiBaseUrl: string
   token: string
   defaultPeriods: string
   dataMode?: LotteryDataMode
   dataDir?: string
 }
+
+/** @deprecated Use LotteryMcpConfig instead. */
+export type NbcpConfig = LotteryMcpConfig
 
 export type LotteryMcpClientConfig = {
   apiBaseUrl: string
@@ -290,7 +293,7 @@ const readOfficialCache = async (dataDir: string, lotteryType: string) => {
     throw new McpApiError({
       statusCode: 404,
       code: 'LOTTERYMCP_OFFICIAL_CACHE_MISSING',
-      message: '未找到排列3(pl3)官方数据缓存，请先运行 lotterymcp sync --source official --lottery pl3。',
+      message: '未找到排列3(pl3)官方数据缓存，请先运行 lotterymcp sync --source official。',
       data: { cachePath },
     })
   }
@@ -662,4 +665,5 @@ export const createPl3PredictionService = (
   }
 }
 
+/** @deprecated Use createLotteryMcpClient instead. */
 export const createLotteryApiClient = createLotteryMcpClient

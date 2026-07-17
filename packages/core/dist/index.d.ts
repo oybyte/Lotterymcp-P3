@@ -52,13 +52,15 @@ export type LotteryPeriodsQuery = {
 export type LotterySummaryQuery = {
     lotteryType?: string;
 };
-export type NbcpConfig = {
+export type LotteryMcpConfig = {
     apiBaseUrl: string;
     token: string;
     defaultPeriods: string;
     dataMode?: LotteryDataMode;
     dataDir?: string;
 };
+/** @deprecated Use LotteryMcpConfig instead. */
+export type NbcpConfig = LotteryMcpConfig;
 export type LotteryMcpClientConfig = {
     apiBaseUrl: string;
     token?: string;
@@ -134,4 +136,5 @@ export declare const createOfficialLocalProvider: (config?: Pick<LotteryMcpClien
 export declare const formatMcpApiError: (error: unknown) => string;
 export declare const createLotteryMcpClient: (config: LotteryMcpClientConfig) => LotteryMcpClient;
 export declare const createPl3PredictionService: (client: Pick<LotteryMcpClient, "getHistory">, config?: Pl3PredictionServiceConfig) => Pl3PredictionService;
+/** @deprecated Use createLotteryMcpClient instead. */
 export declare const createLotteryApiClient: (config: LotteryMcpClientConfig) => LotteryMcpClient;

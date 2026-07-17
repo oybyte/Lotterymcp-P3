@@ -6,6 +6,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const serverEntryUrl = pathToFileURL(path.join(repoRoot, 'packages', 'mcp-server', 'dist', 'index.js')).href
 
+test('legacy server starter remains a thin compatibility alias', async () => {
+  const { startLotteryMcpStdioServer, startNbcpStdioServer } = await import(serverEntryUrl)
+  assert.equal(startNbcpStdioServer, startLotteryMcpStdioServer)
+})
+
 test('mcp server exposes the five P3 tools through the public tool catalog', async () => {
   const { createLotteryToolCatalog } = await import(serverEntryUrl)
 
