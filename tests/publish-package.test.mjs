@@ -36,6 +36,15 @@ test('publishable packages expose registry metadata and cli package includes a R
   assert.equal(existsSync(cliReadmePath), true)
 })
 
+test('published cli is TypeScript-only and ships the P3 sync implementation', () => {
+  const cliPackage = readJson(path.join('packages', 'cli', 'package.json'))
+
+  assert.deepEqual(cliPackage.files, ['dist', 'README.md'])
+  assert.equal(existsSync(path.join(repoRoot, 'packages', 'cli', 'dist', 'official-sync.js')), true)
+  assert.equal(existsSync(path.join(repoRoot, 'packages', 'cli', 'dist', 'python-runtime.js')), false)
+  assert.equal(existsSync(path.join(repoRoot, 'examples', 'python')), false)
+})
+
 test('public docs stay product-facing and do not expose internal conversation wording', () => {
   const readme = readFileSync(path.join(repoRoot, 'README.md'), 'utf8')
   const usageDoc = readFileSync(path.join(repoRoot, 'docs', 'mcp-usage.zh-CN.md'), 'utf8')

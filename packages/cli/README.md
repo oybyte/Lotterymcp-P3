@@ -1,76 +1,18 @@
-﻿# Lotterymcp CLI
+# Lotterymcp CLI
 
-`neuxnbcp` 是 Lotterymcp 的实际 CLI 实现包。
-
-普通用户直接使用对外短命令包 `lotterymcp` 即可。
-
-它负责两件事：
-
-- 提供中文菜单，帮助用户完成本地配置
-- 以 MCP `stdio` 服务形式接入支持 MCP 的 AI 工具
-
-支持接入的主要彩种包括：福彩3D、排列3、双色球、大乐透、排列5、七星彩、快乐8。
-
-## 安装
-
-临时运行：
+`neuxnbcp` 是 `lotterymcp` 的实际 CLI 实现包，只支持排列3（`pl3`）。
 
 ```bash
 npx --yes lotterymcp@latest
-```
-
-全局安装：
-
-```bash
-npm i -g lotterymcp
-lotterymcp
-```
-
-## 常用命令
-
-```bash
-lotterymcp
-lotterymcp init
 lotterymcp doctor
-lotterymcp login
+lotterymcp sync --source official --lottery pl3 --limit 500
+lotterymcp sync --source file --file history.json --limit 500
+lotterymcp predict --periods 200 --tickets 10 --play mixed
 lotterymcp serve
-lotterymcp analyze fc3d --periods 120
 ```
 
-- `lotterymcp`：打开中文菜单
-- `lotterymcp init`：保存接口地址、密钥和默认分析期数
-- `lotterymcp doctor`：检查当前配置和接口连通性
-- `lotterymcp login`：输出官网和账号入口
-- `lotterymcp serve`：启动 MCP `stdio` 服务
-- `lotterymcp analyze`：直接运行本地分析程序
+`predict` 使用内置 TypeScript 核心，不需要 Python。`analyze pl3`、`analyze p3` 和 `analyze pl3_markov` 为兼容别名。
 
-## 使用前准备
+remote 模式继续使用 `NEUXSBOT_API_BASE_URL` 和 `NEUXSBOT_TOKEN`。设置 `LOTTERYMCP_DATA_MODE=official` 后改为读取 `.lotterymcp-data/pl3.json`，不调用 NEUXSBOT 受控接口。
 
-1. 打开 [https://www.neuxsbot.com](https://www.neuxsbot.com)
-2. 注册或登录账号
-3. 在个人中心复制你的 MCP 密钥
-
-## MCP 配置示例
-
-```json
-{
-  "mcpServers": {
-    "neuxsbot-cp": {
-      "command": "npx",
-      "args": ["-y", "lotterymcp@latest", "serve"],
-      "env": {
-        "NEUXSBOT_API_BASE_URL": "https://www.neuxsbot.com",
-        "NEUXSBOT_TOKEN": "your-real-token",
-        "NEUXSBOT_DEFAULT_PERIODS": "100"
-      }
-    }
-  }
-}
-```
-
-## 说明
-
-- 彩种和期数不需要在本地写死，可以在 AI 对话中动态指定
-- 密钥、调用次数和权限状态由网站账号体系控制
-- 这个 npm 包只公开命令行接入层和本地 MCP 代理能力
-- 完整使用说明请以仓库首页文档为准
+候选分数不是中奖概率，walk-forward 回测和名义 ROI 不代表未来收益。

@@ -2,9 +2,13 @@ export type NbcpConfig = {
     apiBaseUrl: string;
     token: string;
     defaultPeriods: string;
+    dataMode?: 'remote' | 'official';
+    dataDir?: string;
 };
 export declare const DEFAULT_API_BASE_URL = "https://www.neuxsbot.com";
 export declare const DEFAULT_PERIODS = "100";
+export declare const DEFAULT_DATA_MODE = "remote";
+export declare const DEFAULT_DATA_DIR = ".lotterymcp-data";
 export declare const CONFIG_DIRNAME = ".neuxsbot";
 export declare const CONFIG_FILENAME = "cp.config.json";
 export declare const getConfigPath: () => string;

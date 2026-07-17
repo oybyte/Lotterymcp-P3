@@ -1,24 +1,23 @@
 #!/usr/bin/env node
 import path from 'node:path';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { fileURLToPath } from 'node:url';
-import { McpApiError, createLotteryMcpClient, formatMcpApiError } from 'lotterymcp-core';
+import { McpApiError, createLotteryMcpClient, createPl3PredictionService, formatMcpApiError, normalizePl3Records, writeJsonAtomically, } from 'lotterymcp-core';
 import { MCP_SERVER_TOOLS, MCP_SERVER_TRANSPORT, startNbcpStdioServer } from 'lotterymcp-server';
-import { DEFAULT_API_BASE_URL, DEFAULT_PERIODS, maskToken, renderMcpConfigSnippet, resolveConfig, saveLocalConfig, validateConfig, } from './config.js';
+import { DEFAULT_API_BASE_URL, DEFAULT_PERIODS, getConfigPath, maskToken, renderMcpConfigSnippet, resolveConfig, saveLocalConfig, validateConfig, } from './config.js';
 import { renderNbcpBanner, shouldShowBanner } from './banner.js';
-import { PYTHON_PROGRAMS, getPythonProgramById, runPythonAnalysisProgram } from './python-runtime.js';
+import { OFFICIAL_LOTTERY_TYPES, isOfficialLotteryType, syncOfficialFile, syncOfficialLottery, } from './official-sync.js';
 const WEBSITE_URL = 'https://www.neuxsbot.com';
 const MEMBER_CENTER_URL = 'https://www.neuxsbot.com/member';
 const TOKEN_PAGE_URL = 'https://www.neuxsbot.com/member/api-keys';
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const MENU_TEXT = `请选择操作：
   1. 注册/登录并获取 Token
   2. 配置接口地址、Token、默认期数
   3. 生成 MCP 配置片段
   4. 检查当前配置和网站连通性
   5. 启动 MCP 服务
-  6. 直接运行本地分析程序
+  6. 生成排列3预测与回测
+  7. 同步官方公开开奖数据
   0. 退出`;
 const HELP_TEXT = `临时打开菜单:
   npx --yes lotterymcp@latest
@@ -30,24 +29,26 @@ const HELP_TEXT = `临时打开菜单:
   1. 先注册/登录官网并获取 Token
   2. 再配置 API_BASE_URL / TOKEN / DEFAULT_PERIODS
   3. 复制 MCP 配置片段到支持 MCP 的 AI 工具
-  4. 在 AI 对话里动态选择彩种和期数
-  5. 如需本地直接分析，可运行 Python 分析程序
+  4. 在 AI 对话里读取排列3历史数据并指定期数
+  5. 如需本地直接分析，可运行排列3预测核心
 
 可用命令:
   serve            启动 MCP stdio 服务
   init             生成本地配置文件
   doctor           检查当前配置和网站连通性
   login            打开官网账号页并获取 Token
-  analyze          直接运行 Python 分析程序
+  predict          生成排列3候选与 walk-forward 回测
+  analyze          predict 的兼容别名
+  sync             同步官方公开开奖数据到本地缓存
 
 说明:
-  analyze 命令会自动准备本地 Python 运行环境。
-  如果当前系统没有 Python，Windows 下会尝试自动安装并初始化依赖。
+  predict/analyze 使用内置 TypeScript 预测核心，不需要 Python。
+  sync 命令只访问公开开奖数据源，不调用 NEUXSBOT 受控接口。
 
 当前版本:
   官网: www.neuxsbot.com
   传输方式: ${MCP_SERVER_TRANSPORT}
-  彩种: 由 AI 对话动态传入，不写死在本地配置
+  彩种: 排列3(pl3)
   工具列表: ${MCP_SERVER_TOOLS.join(', ')}
 `;
 const TOKEN_TEXT = `注册/登录并获取 Token:
@@ -58,27 +59,22 @@ const TOKEN_TEXT = `注册/登录并获取 Token:
 说明:
   1. 登录后进入官网账号页，直接复制 MCP Token。
   2. Token 用于识别会员权限、调用次数、升级状态。
-  3. 彩种不在本地写死，由 AI 对话触发工具时动态传入。
+  3. 当前版本仅支持排列3(pl3)数据。
 `;
 const renderConfigSummary = (config) => `当前配置:
   API_BASE_URL: ${config.apiBaseUrl || '(未设置)'}
   TOKEN: ${maskToken(config.token || '')}
   DEFAULT_PERIODS: ${config.defaultPeriods || '(未设置)'}
+  DATA_MODE: ${config.dataMode || 'remote'}
+  DATA_DIR: ${config.dataDir || '.lotterymcp-data'}
 `;
-const renderPythonProgramMenu = () => {
-    const rows = PYTHON_PROGRAMS.map((program, index) => `  ${index + 1}. ${program.label} (${program.id})`);
-    return `请选择本地分析程序：
-${rows.join('\n')}
-  0. 返回上级`;
-};
 const renderAnalyzeUsage = () => {
-    const rows = PYTHON_PROGRAMS.map((program) => `  ${program.id.padEnd(4, ' ')} ${program.label}`);
-    return `可用分析程序:
-${rows.join('\n')}
+    return `用法:
+  lotterymcp predict --periods 200 --tickets 10 --play mixed
+  lotterymcp analyze pl3 --periods 200 --tickets 10 --play mixed
 
-示例:
-  npx --yes lotterymcp@latest analyze fc3d --periods 120
-  npx --yes lotterymcp@latest analyze ssq --periods 150
+玩法: direct, group3, group6, mixed
+兼容别名: pl3, p3, pl3_markov
 `;
 };
 const isPositiveInteger = (value) => /^\d+$/.test(value.trim());
@@ -86,14 +82,18 @@ const buildNextConfig = (currentConfig, input) => ({
     apiBaseUrl: input.apiBaseUrl?.trim() || currentConfig.apiBaseUrl || DEFAULT_API_BASE_URL,
     token: input.token?.trim() || currentConfig.token || '',
     defaultPeriods: input.defaultPeriods?.trim() || currentConfig.defaultPeriods || DEFAULT_PERIODS,
+    dataMode: input.dataMode || currentConfig.dataMode || 'remote',
+    dataDir: input.dataDir?.trim() || currentConfig.dataDir || '.lotterymcp-data',
 });
 const toResolvedConfig = (config) => ({
     apiBaseUrl: String(config.apiBaseUrl || '').trim(),
     token: String(config.token || '').trim(),
     defaultPeriods: String(config.defaultPeriods || '').trim(),
+    dataMode: config.dataMode === 'official' ? 'official' : 'remote',
+    dataDir: String(config.dataDir || '.lotterymcp-data').trim(),
 });
 const persistConfig = async (nextConfig) => {
-    if (!nextConfig.token.trim()) {
+    if ((nextConfig.dataMode || 'remote') !== 'official' && !nextConfig.token.trim()) {
         console.error('Token 不能为空。');
         return 1;
     }
@@ -103,6 +103,8 @@ const persistConfig = async (nextConfig) => {
     }
     await saveLocalConfig(nextConfig);
     console.log('\n配置已保存。');
+    console.log(`配置文件: ${getConfigPath()}`);
+    console.log('Token 是敏感信息，请不要分享该配置文件。');
     console.log(renderConfigSummary(nextConfig));
     return 0;
 };
@@ -137,6 +139,46 @@ const promptForConfig = async () => {
     }
 };
 const canShowInteractiveMenu = (stdin = process.stdin, stdout = process.stdout) => process.env.NBCP_FORCE_MENU === '1' || (Boolean(stdin.isTTY) && Boolean(stdout.isTTY));
+const hasOfficialCache = (dataDir) => {
+    return existsSync(path.join(dataDir, 'pl3.json'));
+};
+const getOfficialCacheSummary = (dataDir) => {
+    const cachePath = path.join(dataDir, 'pl3.json');
+    if (!existsSync(cachePath))
+        return { exists: false, cachePath };
+    try {
+        const parsed = JSON.parse(readFileSync(cachePath, 'utf8'));
+        const sourceRecords = Array.isArray(parsed) ? parsed : parsed?.records;
+        const records = normalizePl3Records(Array.isArray(sourceRecords) ? sourceRecords : []);
+        return {
+            exists: true,
+            valid: true,
+            cachePath,
+            recordCount: records.length,
+            latestPeriod: records.at(-1)?.period || null,
+            generatedAt: parsed?.generatedAt || null,
+        };
+    }
+    catch (error) {
+        return {
+            exists: true,
+            valid: false,
+            cachePath,
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
+};
+const validateOfficialCache = (config) => {
+    if (config.dataMode !== 'official') {
+        return true;
+    }
+    const dataDir = String(config.dataDir || '.lotterymcp-data');
+    if (hasOfficialCache(dataDir)) {
+        return true;
+    }
+    console.error(`未找到排列3官方数据缓存，请先运行 lotterymcp sync --source official --lottery pl3。数据目录: ${dataDir}`);
+    return false;
+};
 const printConfigSnippet = async () => {
     const config = await resolveConfig();
     const missing = validateConfig(config);
@@ -151,12 +193,16 @@ const printConfigSnippet = async () => {
 const renderDoctorSummary = (health) => {
     const tools = Array.isArray(health?.tools) ? health.tools.join(', ') : '未返回';
     const authHeader = health?.auth?.header ? String(health.auth.header) : '未返回';
+    const provider = health?.provider ? String(health.provider) : 'remote';
     return [
-        '网站接口正常。',
+        provider === 'official' ? '官方本地数据源正常。' : '网站接口正常。',
         `  服务名称: ${health?.service || '未知'}`,
         `  传输方式: ${health?.transport || '未知'}`,
-        `  鉴权头: ${authHeader}`,
-        `  工具列表: ${tools}`,
+        `  数据来源: ${provider}`,
+        ...(health?.dataDir ? [`  数据目录: ${health.dataDir}`] : []),
+        ...(provider === 'official' ? [] : [`  鉴权头: ${authHeader}`]),
+        `  数据工具: ${tools}`,
+        `  本地 MCP 工具: ${MCP_SERVER_TOOLS.join(', ')}`,
     ].join('\n');
 };
 const runDoctor = async () => {
@@ -167,10 +213,28 @@ const runDoctor = async () => {
         console.log(`缺少: ${missing.join(', ')}`);
         return 1;
     }
+    if (!validateOfficialCache(config)) {
+        return 1;
+    }
     try {
         const client = createLotteryMcpClient(toResolvedConfig(config));
         const health = await client.getHealth();
         console.log(renderDoctorSummary(health));
+        const predictionService = createPl3PredictionService(client, {
+            dataDir: config.dataDir,
+            defaultPeriods: 200,
+            payouts: getPredictionPayouts(),
+        });
+        const ledger = await predictionService.getLedgerSummary();
+        console.log(`预测账本: 总计 ${ledger.total}，待结算 ${ledger.pending}，已结算 ${ledger.settled}`);
+        if (config.dataMode === 'official') {
+            const cache = getOfficialCacheSummary(String(config.dataDir || '.lotterymcp-data'));
+            if (!cache.valid) {
+                console.error(`排列3缓存无效: ${cache.error || cache.cachePath}`);
+                return 1;
+            }
+            console.log(`排列3缓存: ${cache.recordCount} 期，最新 ${cache.latestPeriod || '未知'}，更新 ${cache.generatedAt || '未知'}`);
+        }
         return 0;
     }
     catch (error) {
@@ -179,7 +243,7 @@ const runDoctor = async () => {
             : error instanceof Error
                 ? error.message
                 : String(error);
-        console.error(`网站接口异常: ${message}`);
+        console.error(`检查失败: ${message}`);
         return 1;
     }
 };
@@ -190,8 +254,14 @@ const runServe = async () => {
         console.error(`未检测到完整配置，请先运行 init 或默认菜单完成接入。缺少: ${missing.join(', ')}`);
         return 1;
     }
+    if (!validateOfficialCache(config)) {
+        return 1;
+    }
     try {
-        await startNbcpStdioServer(toResolvedConfig(config));
+        await startNbcpStdioServer({
+            ...toResolvedConfig(config),
+            predictionPayouts: getPredictionPayouts(),
+        });
         await new Promise(() => undefined);
         return 0;
     }
@@ -205,92 +275,66 @@ const runServe = async () => {
         return 1;
     }
 };
-const runSelectedPythonProgram = async (programId, overrides = {}) => {
-    const config = await resolveConfig();
-    const resolvedConfig = buildNextConfig(config, {});
-    const program = getPythonProgramById(programId);
-    const periods = String(overrides.periods || resolvedConfig.defaultPeriods || DEFAULT_PERIODS).trim();
-    if (!program) {
-        console.error(`未识别的分析程序: ${programId}`);
-        console.log(renderAnalyzeUsage());
-        return 1;
-    }
-    if (!isPositiveInteger(periods)) {
-        console.error('分析期数必须是正整数。');
-        return 1;
-    }
-    console.log(`准备运行: ${program.label}`);
-    console.log(`接口地址: ${resolvedConfig.apiBaseUrl}`);
-    console.log(`分析期数: ${periods}`);
-    if (!resolvedConfig.token.trim()) {
-        console.log('当前未配置 Token，将按当前网站公开能力尝试访问数据。');
-    }
-    console.log('');
-    try {
-        await runPythonAnalysisProgram(program.id, {
-            apiBaseUrl: resolvedConfig.apiBaseUrl,
-            token: resolvedConfig.token,
-            periods,
-            outputPath: overrides.outputPath,
-            repoRoot: REPO_ROOT,
-            onStatus: (message) => console.log(message),
-        });
-        console.log(`\n${program.label} 运行完成。`);
-        return 0;
-    }
-    catch (error) {
-        console.error(error instanceof Error ? error.message : String(error));
-        return 1;
-    }
+const getPredictionPayouts = () => {
+    const readAmount = (name) => {
+        const raw = process.env[name];
+        if (raw === undefined || raw.trim() === '')
+            return undefined;
+        const parsed = Number(raw);
+        if (!Number.isFinite(parsed) || parsed < 0)
+            throw new Error(`${name} 必须是非负数字。`);
+        return parsed;
+    };
+    const values = {
+        stake: readAmount('LOTTERYMCP_PL3_STAKE'),
+        direct: readAmount('LOTTERYMCP_PL3_PAYOUT_DIRECT'),
+        group3: readAmount('LOTTERYMCP_PL3_PAYOUT_GROUP3'),
+        group6: readAmount('LOTTERYMCP_PL3_PAYOUT_GROUP6'),
+    };
+    return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
 };
-const runPythonProgramMenu = async () => {
-    console.log('本地分析程序会自动准备 Python 运行环境。');
-    console.log('如果当前系统没有 Python，Windows 下会尝试自动安装并初始化依赖。\n');
-    console.log(renderPythonProgramMenu());
-    if (!canShowInteractiveMenu()) {
-        console.log('\n当前为非交互环境，请使用 `lotterymcp analyze <programId> --periods 120`。');
-        console.log(renderAnalyzeUsage());
-        return 0;
-    }
-    const currentConfig = await resolveConfig();
-    const rl = createInterface({
-        input: process.stdin,
-        output: process.stdout,
-    });
-    try {
-        const selection = (await rl.question('\n请输入数字：')).trim();
-        console.log('');
-        if (selection === '0') {
-            console.log('已返回。');
-            return 0;
-        }
-        const program = /^\d+$/.test(selection) ? PYTHON_PROGRAMS[Number(selection) - 1] : undefined;
-        if (!program) {
-            console.error(`无效选择: ${selection || '(空)'}`);
-            return 1;
-        }
-        const periodsInput = (await rl.question(`分析期数 [${currentConfig.defaultPeriods || DEFAULT_PERIODS}]: `)).trim();
-        return runSelectedPythonProgram(program.id, {
-            periods: periodsInput || currentConfig.defaultPeriods || DEFAULT_PERIODS,
-        });
-    }
-    finally {
-        rl.close();
-    }
+const renderPrediction = (prediction) => {
+    const lines = [
+        '排列3预测结果',
+        `  截止期号: ${prediction.afterPeriod}`,
+        `  训练记录: ${prediction.training.recordCount}`,
+        `  模型版本: ${prediction.model.version}`,
+        `  玩法/注数: ${prediction.query.playType} / ${prediction.query.tickets}`,
+        `  预测 ID: ${prediction.predictionId}`,
+        '',
+        '候选票:',
+        ...prediction.tickets.map((ticket) => `  ${String(ticket.rank).padStart(2, ' ')}. ${ticket.playType.padEnd(6, ' ')} ${ticket.display}  score=${ticket.score}`),
+        '',
+        prediction.backtest.status === 'complete'
+            ? `回测: ${prediction.backtest.testCount} 期 | 成本 ${prediction.backtest.totalCost} | 返回 ${prediction.backtest.totalReturn} | ROI ${prediction.backtest.roi}`
+            : '回测: 数据仅够生成预测，暂无可用测试期。',
+        prediction.payouts.note,
+    ];
+    return lines.join('\n');
 };
-const parseAnalyzeArgs = (argv) => {
+const parsePredictionArgs = (argv, allowProgramAlias = false) => {
     const parsed = {};
+    const aliases = new Set(['pl3', 'p3', 'pl3_markov']);
     for (let index = 0; index < argv.length; index += 1) {
         const arg = argv[index];
         if (!arg) {
             continue;
         }
-        if (!arg.startsWith('--') && !parsed.programId) {
-            parsed.programId = arg;
+        if (!arg.startsWith('--') && allowProgramAlias && aliases.has(arg.toLowerCase())) {
             continue;
         }
         if (arg === '--periods' || arg === '-p') {
-            parsed.periods = argv[index + 1];
+            parsed.periods = Number(argv[index + 1]);
+            index += 1;
+            continue;
+        }
+        if (arg === '--tickets' || arg === '-n') {
+            parsed.tickets = Number(argv[index + 1]);
+            index += 1;
+            continue;
+        }
+        if (arg === '--play') {
+            parsed.playType = String(argv[index + 1] || '').trim().toLowerCase();
             index += 1;
             continue;
         }
@@ -303,27 +347,188 @@ const parseAnalyzeArgs = (argv) => {
     }
     return parsed;
 };
-const runAnalyzeCommand = async (argv) => {
+const runPredictionCommand = async (argv, allowProgramAlias = false) => {
     let parsed;
     try {
-        parsed = parseAnalyzeArgs(argv);
+        parsed = parsePredictionArgs(argv, allowProgramAlias);
     }
     catch (error) {
         console.error(error instanceof Error ? error.message : String(error));
         console.log(renderAnalyzeUsage());
         return 1;
     }
-    if (!parsed.programId) {
-        if (canShowInteractiveMenu()) {
-            return runPythonProgramMenu();
+    const config = await resolveConfig();
+    const missing = validateConfig(config);
+    if (missing.length > 0) {
+        console.error(`未检测到完整配置。缺少: ${missing.join(', ')}`);
+        return 1;
+    }
+    if (!validateOfficialCache(config))
+        return 1;
+    try {
+        const resolvedConfig = toResolvedConfig(config);
+        const client = createLotteryMcpClient(resolvedConfig);
+        const service = createPl3PredictionService(client, {
+            dataDir: resolvedConfig.dataDir,
+            defaultPeriods: 200,
+            payouts: getPredictionPayouts(),
+        });
+        const envelope = await service.predict({
+            periods: parsed.periods,
+            tickets: parsed.tickets,
+            playType: parsed.playType,
+        });
+        console.log(renderPrediction(envelope.data));
+        if (parsed.outputPath) {
+            const outputPath = path.resolve(parsed.outputPath);
+            await writeJsonAtomically(outputPath, envelope);
+            console.log(`结果文件: ${outputPath}`);
         }
+        return 0;
+    }
+    catch (error) {
+        const message = error instanceof McpApiError ? formatMcpApiError(error) : error instanceof Error ? error.message : String(error);
+        console.error(`排列3预测失败: ${message}`);
+        return 1;
+    }
+};
+const runPredictionMenu = async () => {
+    if (!canShowInteractiveMenu()) {
         console.log(renderAnalyzeUsage());
         return 0;
     }
-    return runSelectedPythonProgram(parsed.programId, {
-        periods: parsed.periods,
-        outputPath: parsed.outputPath,
-    });
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+        const periods = (await rl.question(`历史期数 [200]: `)).trim();
+        const tickets = (await rl.question(`候选注数 [10]: `)).trim();
+        const play = (await rl.question(`玩法 direct/group3/group6/mixed [mixed]: `)).trim();
+        return runPredictionCommand([
+            '--periods', periods || '200',
+            '--tickets', tickets || '10',
+            '--play', play || 'mixed',
+        ]);
+    }
+    finally {
+        rl.close();
+    }
+};
+const renderSyncUsage = () => `用法:
+  lotterymcp sync --source official --lottery pl3 --limit 500
+  lotterymcp sync --source official --all --limit 500
+  lotterymcp sync --source file --file history.json --limit 500
+
+支持彩种: ${OFFICIAL_LOTTERY_TYPES.join(', ')}
+`;
+const parseSyncArgs = (argv) => {
+    const parsed = {};
+    for (let index = 0; index < argv.length; index += 1) {
+        const arg = argv[index];
+        if (!arg) {
+            continue;
+        }
+        if (arg === '--source') {
+            parsed.source = argv[index + 1];
+            index += 1;
+            continue;
+        }
+        if (arg === '--lottery') {
+            const lotteryType = String(argv[index + 1] || '').trim().toLowerCase();
+            if (!isOfficialLotteryType(lotteryType)) {
+                throw new Error(`未支持的官方彩种: ${lotteryType || '(空)'}`);
+            }
+            parsed.lottery = lotteryType;
+            index += 1;
+            continue;
+        }
+        if (arg === '--all') {
+            parsed.all = true;
+            continue;
+        }
+        if (arg === '--limit' || arg === '-n') {
+            parsed.limit = argv[index + 1];
+            index += 1;
+            continue;
+        }
+        if (arg === '--file') {
+            parsed.filePath = argv[index + 1];
+            index += 1;
+            continue;
+        }
+        throw new Error(`未知参数: ${arg}`);
+    }
+    return parsed;
+};
+const runSyncCommand = async (argv) => {
+    let parsed;
+    try {
+        parsed = parseSyncArgs(argv);
+    }
+    catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        console.log(renderSyncUsage());
+        return 1;
+    }
+    const source = parsed.source || 'official';
+    if (source !== 'official' && source !== 'file') {
+        console.error(`未支持的数据源: ${parsed.source}`);
+        console.log(renderSyncUsage());
+        return 1;
+    }
+    if (source === 'official' && !parsed.all && !parsed.lottery) {
+        console.error('请使用 --lottery pl3 指定排列3，或使用 --all 同步排列3。');
+        console.log(renderSyncUsage());
+        return 1;
+    }
+    const limit = Number(parsed.limit || '500');
+    if (!Number.isFinite(limit) || limit <= 0) {
+        console.error('同步期数必须是正整数。');
+        return 1;
+    }
+    const config = await resolveConfig();
+    const dataDir = String(config.dataDir || '.lotterymcp-data');
+    if (source === 'file') {
+        if (!parsed.filePath) {
+            console.error('使用 --source file 时必须提供 --file。');
+            console.log(renderSyncUsage());
+            return 1;
+        }
+        try {
+            const result = await syncOfficialFile({ filePath: parsed.filePath, limit, dataDir });
+            console.log(`写入: ${result.outputPath}`);
+            console.log(`记录: ${result.records.length}`);
+            result.warnings.forEach((warning) => console.warn(`警告: ${warning}`));
+            if (result.settledCount > 0)
+                console.log(`已结算预测: ${result.settledCount}`);
+            return 0;
+        }
+        catch (error) {
+            console.error(`文件同步失败: ${error instanceof Error ? error.message : String(error)}`);
+            return 1;
+        }
+    }
+    const lotteryTypes = parsed.all ? [...OFFICIAL_LOTTERY_TYPES] : [parsed.lottery];
+    for (const lotteryType of lotteryTypes) {
+        try {
+            console.log(`正在同步 ${lotteryType} 官方公开开奖数据...`);
+            const result = await syncOfficialLottery({
+                lotteryType,
+                limit,
+                dataDir,
+            });
+            console.log(`  写入: ${result.outputPath}`);
+            console.log(`  记录: ${result.records.length}`);
+            console.log(`  来源: ${result.sourceUrl}`);
+            result.warnings.forEach((warning) => console.warn(`  警告: ${warning}`));
+            if (result.settledCount > 0)
+                console.log(`  已结算预测: ${result.settledCount}`);
+        }
+        catch (error) {
+            console.error(`${lotteryType} 同步失败: ${error instanceof Error ? error.message : String(error)}`);
+            return 1;
+        }
+    }
+    console.log('\n同步完成。使用 LOTTERYMCP_DATA_MODE=official 可让 MCP 服务读取本地官方数据缓存。');
+    return 0;
 };
 const runStartupMenu = async () => {
     console.log(MENU_TEXT);
@@ -351,7 +556,9 @@ const runStartupMenu = async () => {
             case '5':
                 return runServe();
             case '6':
-                return runPythonProgramMenu();
+                return runPredictionMenu();
+            case '7':
+                return runSyncCommand(['--source', 'official', '--all']);
             case '0':
                 console.log('已退出。');
                 return 0;
@@ -391,7 +598,13 @@ const main = async () => {
         return 0;
     }
     if (command === 'analyze') {
-        return runAnalyzeCommand(args.slice(1));
+        return runPredictionCommand(args.slice(1), true);
+    }
+    if (command === 'predict') {
+        return runPredictionCommand(args.slice(1));
+    }
+    if (command === 'sync') {
+        return runSyncCommand(args.slice(1));
     }
     console.error(`未知命令: ${command}`);
     console.log(HELP_TEXT);

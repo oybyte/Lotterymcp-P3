@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 export const DEFAULT_API_BASE_URL = 'https://www.neuxsbot.com';
 export const DEFAULT_PERIODS = '100';
+export const DEFAULT_DATA_MODE = 'remote';
+export const DEFAULT_DATA_DIR = '.lotterymcp-data';
 export const CONFIG_DIRNAME = '.neuxsbot';
 export const CONFIG_FILENAME = 'cp.config.json';
 export const getConfigPath = () => process.env.NBCP_CONFIG_PATH || path.join(os.homedir(), CONFIG_DIRNAME, CONFIG_FILENAME);
@@ -18,10 +20,13 @@ export const loadLocalConfig = async () => {
 };
 export const resolveConfig = async () => {
     const localConfig = await loadLocalConfig();
+    const dataMode = process.env.LOTTERYMCP_DATA_MODE || localConfig.dataMode || DEFAULT_DATA_MODE;
     return {
         apiBaseUrl: process.env.NEUXSBOT_API_BASE_URL || localConfig.apiBaseUrl || DEFAULT_API_BASE_URL,
         token: process.env.NEUXSBOT_TOKEN || localConfig.token || '',
         defaultPeriods: process.env.NEUXSBOT_DEFAULT_PERIODS || localConfig.defaultPeriods || DEFAULT_PERIODS,
+        dataMode: dataMode === 'official' ? 'official' : 'remote',
+        dataDir: process.env.LOTTERYMCP_DATA_DIR || localConfig.dataDir || DEFAULT_DATA_DIR,
     };
 };
 export const saveLocalConfig = async (config) => {
@@ -34,7 +39,7 @@ export const validateConfig = (config) => {
     if (!config.apiBaseUrl?.trim()) {
         missing.push('API_BASE_URL');
     }
-    if (!config.token?.trim()) {
+    if ((config.dataMode || DEFAULT_DATA_MODE) !== 'official' && !config.token?.trim()) {
         missing.push('TOKEN');
     }
     if (!config.defaultPeriods?.trim() || !/^\d+$/.test(config.defaultPeriods.trim())) {
@@ -58,8 +63,11 @@ export const renderMcpConfigSnippet = (config) => JSON.stringify({
             args: ['-y', 'lotterymcp@latest', 'serve'],
             env: {
                 NEUXSBOT_API_BASE_URL: config.apiBaseUrl,
-                NEUXSBOT_TOKEN: config.token,
                 NEUXSBOT_DEFAULT_PERIODS: config.defaultPeriods,
+                LOTTERYMCP_DATA_MODE: config.dataMode || DEFAULT_DATA_MODE,
+                ...(config.dataMode === 'official'
+                    ? { LOTTERYMCP_DATA_DIR: config.dataDir || DEFAULT_DATA_DIR }
+                    : { NEUXSBOT_TOKEN: config.token }),
             },
         },
     },

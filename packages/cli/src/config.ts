@@ -6,10 +6,14 @@ export type NbcpConfig = {
   apiBaseUrl: string
   token: string
   defaultPeriods: string
+  dataMode?: 'remote' | 'official'
+  dataDir?: string
 }
 
 export const DEFAULT_API_BASE_URL = 'https://www.neuxsbot.com'
 export const DEFAULT_PERIODS = '100'
+export const DEFAULT_DATA_MODE = 'remote'
+export const DEFAULT_DATA_DIR = '.lotterymcp-data'
 export const CONFIG_DIRNAME = '.neuxsbot'
 export const CONFIG_FILENAME = 'cp.config.json'
 
@@ -28,11 +32,14 @@ export const loadLocalConfig = async (): Promise<Partial<NbcpConfig>> => {
 
 export const resolveConfig = async (): Promise<Partial<NbcpConfig>> => {
   const localConfig = await loadLocalConfig()
+  const dataMode = process.env.LOTTERYMCP_DATA_MODE || localConfig.dataMode || DEFAULT_DATA_MODE
 
   return {
     apiBaseUrl: process.env.NEUXSBOT_API_BASE_URL || localConfig.apiBaseUrl || DEFAULT_API_BASE_URL,
     token: process.env.NEUXSBOT_TOKEN || localConfig.token || '',
     defaultPeriods: process.env.NEUXSBOT_DEFAULT_PERIODS || localConfig.defaultPeriods || DEFAULT_PERIODS,
+    dataMode: dataMode === 'official' ? 'official' : 'remote',
+    dataDir: process.env.LOTTERYMCP_DATA_DIR || localConfig.dataDir || DEFAULT_DATA_DIR,
   }
 }
 
@@ -49,7 +56,7 @@ export const validateConfig = (config: Partial<NbcpConfig>) => {
     missing.push('API_BASE_URL')
   }
 
-  if (!config.token?.trim()) {
+  if ((config.dataMode || DEFAULT_DATA_MODE) !== 'official' && !config.token?.trim()) {
     missing.push('TOKEN')
   }
 
@@ -81,8 +88,11 @@ export const renderMcpConfigSnippet = (config: NbcpConfig) =>
           args: ['-y', 'lotterymcp@latest', 'serve'],
           env: {
             NEUXSBOT_API_BASE_URL: config.apiBaseUrl,
-            NEUXSBOT_TOKEN: config.token,
             NEUXSBOT_DEFAULT_PERIODS: config.defaultPeriods,
+            LOTTERYMCP_DATA_MODE: config.dataMode || DEFAULT_DATA_MODE,
+            ...(config.dataMode === 'official'
+              ? { LOTTERYMCP_DATA_DIR: config.dataDir || DEFAULT_DATA_DIR }
+              : { NEUXSBOT_TOKEN: config.token }),
           },
         },
       },

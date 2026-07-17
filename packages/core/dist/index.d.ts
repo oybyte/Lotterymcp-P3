@@ -1,9 +1,13 @@
+import { type Pl3PayoutConfig, type Pl3PredictionQuery, type Pl3PredictionResult } from './pl3-prediction.js';
+export * from './pl3-prediction.js';
 export declare const LOTTERY_MCP_PROVIDER = "remote";
 export declare const LOTTERY_MCP_TOOLS: readonly ["lottery.latest", "lottery.history", "lottery.periods", "lottery.summary"];
 export type LotteryMcpToolName = (typeof LOTTERY_MCP_TOOLS)[number];
 export type McpPlan = 'public' | 'member';
+export type LotteryDataMode = 'remote' | 'official';
 export type McpMeta = {
     plan: McpPlan;
+    provider?: 'remote' | 'official';
     apiKeyUsed?: boolean;
     requestLimit: number | null;
     generatedAt: string;
@@ -22,13 +26,15 @@ export type McpHealthResponse = {
     ok: boolean;
     service: string;
     transport?: string;
+    provider?: 'remote' | 'official';
+    dataDir?: string;
     auth?: {
         header?: string;
     };
     tools?: string[];
 };
 export type LotteryLatestQuery = {
-    lotteryType: string;
+    lotteryType?: string;
 };
 export type LotteryHistoryQuery = {
     lotteryType?: string;
@@ -39,7 +45,7 @@ export type LotteryHistoryQuery = {
     limit?: number;
 };
 export type LotteryPeriodsQuery = {
-    lotteryType: string;
+    lotteryType?: string;
     page?: number;
     limit?: number;
 };
@@ -50,11 +56,15 @@ export type NbcpConfig = {
     apiBaseUrl: string;
     token: string;
     defaultPeriods: string;
+    dataMode?: LotteryDataMode;
+    dataDir?: string;
 };
 export type LotteryMcpClientConfig = {
     apiBaseUrl: string;
     token?: string;
     defaultPeriods?: string;
+    dataMode?: LotteryDataMode;
+    dataDir?: string;
     fetchImpl?: typeof fetch;
 };
 export type LotteryMcpClient = {
@@ -66,6 +76,34 @@ export type LotteryMcpClient = {
     getHistory(query: LotteryHistoryQuery): Promise<McpEnvelope<unknown>>;
     getPeriods(query: LotteryPeriodsQuery): Promise<McpEnvelope<unknown>>;
     getSummary(query: LotterySummaryQuery): Promise<McpEnvelope<unknown>>;
+};
+export type LotteryDataProvider = Pick<LotteryMcpClient, 'getHealth' | 'getLatest' | 'getHistory' | 'getPeriods' | 'getSummary'>;
+export type Pl3PredictionServiceConfig = {
+    dataDir?: string;
+    defaultPeriods?: string | number;
+    payouts?: Partial<Pl3PayoutConfig>;
+};
+export type Pl3PredictionService = {
+    ledgerPath: string;
+    predict(query?: Pl3PredictionQuery): Promise<McpEnvelope<Pl3PredictionResult>>;
+    settle(): Promise<{
+        settledCount: number;
+    }>;
+    getLedgerSummary(): Promise<{
+        total: number;
+        pending: number;
+        settled: number;
+    }>;
+};
+export type OfficialLotteryRecord = {
+    lotteryType: string;
+    period: string;
+    drawDate: string;
+    numbers: string;
+    numbersList?: number[];
+    source?: string;
+    sourceUrl?: string;
+    [key: string]: unknown;
 };
 export type McpAction = {
     type?: string;
@@ -89,7 +127,11 @@ export declare class McpApiError extends Error {
         data?: unknown;
     });
 }
+export declare const SUPPORTED_LOTTERY_TYPE = "pl3";
 export declare const normalizeApiBaseUrl: (value: string) => string;
+export declare const normalizeLotteryType: (value?: unknown) => string;
+export declare const createOfficialLocalProvider: (config?: Pick<LotteryMcpClientConfig, "dataDir" | "defaultPeriods">) => LotteryDataProvider;
 export declare const formatMcpApiError: (error: unknown) => string;
 export declare const createLotteryMcpClient: (config: LotteryMcpClientConfig) => LotteryMcpClient;
+export declare const createPl3PredictionService: (client: Pick<LotteryMcpClient, "getHistory">, config?: Pl3PredictionServiceConfig) => Pl3PredictionService;
 export declare const createLotteryApiClient: (config: LotteryMcpClientConfig) => LotteryMcpClient;

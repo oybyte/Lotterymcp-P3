@@ -1,13 +1,16 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { type LotteryMcpClientConfig } from 'lotterymcp-core';
+import { type Pl3PayoutConfig, type LotteryMcpClientConfig } from 'lotterymcp-core';
 import { z } from 'zod';
 export declare const MCP_SERVER_TRANSPORT = "stdio";
-export declare const MCP_SERVER_TOOLS: ("lottery.latest" | "lottery.history" | "lottery.periods" | "lottery.summary")[];
+export declare const MCP_SERVER_TOOLS: string[];
+export type LotteryMcpServerOptions = LotteryMcpClientConfig & {
+    predictionPayouts?: Partial<Pl3PayoutConfig>;
+};
 type LotteryMcpClientLike = {
     getLatest: (input: {
-        lotteryType: string;
+        lotteryType?: string;
     }) => Promise<any>;
     getHistory: (input: {
         lotteryType?: string;
@@ -18,7 +21,7 @@ type LotteryMcpClientLike = {
         limit?: number;
     }) => Promise<any>;
     getPeriods: (input: {
-        lotteryType: string;
+        lotteryType?: string;
         page?: number;
         limit?: number;
     }) => Promise<any>;
@@ -34,19 +37,21 @@ export type LotteryToolDefinition = {
 };
 export declare const createLotteryToolCatalog: (client: LotteryMcpClientLike, options?: {
     defaultPeriods?: number | string;
+    dataDir?: string;
+    predictionPayouts?: Partial<Pl3PayoutConfig>;
 }) => LotteryToolDefinition[];
-export declare const createLotteryMcpServer: (options: LotteryMcpClientConfig) => {
+export declare const createLotteryMcpServer: (options: LotteryMcpServerOptions) => {
     client: import("lotterymcp-core").LotteryMcpClient;
     server: McpServer;
     toolCatalog: LotteryToolDefinition[];
 };
-export declare const startLotteryMcpStdioServer: (options: LotteryMcpClientConfig) => Promise<{
+export declare const startLotteryMcpStdioServer: (options: LotteryMcpServerOptions) => Promise<{
     client: import("lotterymcp-core").LotteryMcpClient;
     server: McpServer;
     toolCatalog: LotteryToolDefinition[];
     transport: StdioServerTransport;
 }>;
-export declare const startNbcpStdioServer: (options: LotteryMcpClientConfig) => Promise<{
+export declare const startNbcpStdioServer: (options: LotteryMcpServerOptions) => Promise<{
     client: import("lotterymcp-core").LotteryMcpClient;
     server: McpServer;
     toolCatalog: LotteryToolDefinition[];

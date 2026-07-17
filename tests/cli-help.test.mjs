@@ -70,7 +70,7 @@ test('cli --help exits successfully and shows readable Chinese help', () => {
   assert.equal(result.status, 0)
   assert.match(result.stdout, /使用方法:/)
   assert.match(result.stdout, /启动 MCP stdio 服务/)
-  assert.match(result.stdout, /直接运行 Python 分析程序/)
+  assert.match(result.stdout, /生成排列3候选与 walk-forward 回测/)
   assert.match(result.stdout, /先注册\/登录官网并获取 Token/)
   assert.match(result.stdout, /npx --yes lotterymcp@latest/)
   assert.equal(result.stderr, '')
@@ -96,7 +96,7 @@ test('cli without args shows the startup menu in Chinese and can exit cleanly', 
   assert.match(result.stdout, /3\.\s+生成 MCP 配置片段/)
   assert.match(result.stdout, /4\.\s+检查当前配置和网站连通性/)
   assert.match(result.stdout, /5\.\s+启动 MCP 服务/)
-  assert.match(result.stdout, /6\.\s+直接运行本地分析程序/)
+  assert.match(result.stdout, /6\.\s+生成排列3预测与回测/)
   assert.match(result.stdout, /0\.\s+退出/)
   assert.match(result.stdout, /请输入数字：/)
   assert.match(result.stdout, /已退出。/)
@@ -118,11 +118,15 @@ test('cli init saves API base URL, token, and default periods', () => {
 
   assert.equal(result.status, 0)
   assert.match(result.stdout, /配置已保存。/)
+  assert.match(result.stdout, /配置文件:/)
+  assert.match(result.stdout, /Token 是敏感信息/)
   const savedConfig = JSON.parse(readFileSync(configPath, 'utf8'))
   assert.deepEqual(savedConfig, {
     apiBaseUrl: 'https://api.example.com',
     token: 'my-token-123456',
     defaultPeriods: '188',
+    dataMode: 'remote',
+    dataDir: '.lotterymcp-data',
   })
   assert.equal(result.stderr, '')
 })
@@ -225,4 +229,170 @@ test('cli serve stays silent on stdout when config is incomplete', () => {
   assert.equal(result.status, 1)
   assert.equal(result.stdout, '')
   assert.match(result.stderr, /未检测到完整配置/)
+})
+
+test('cli sync writes official cache from a public-source compatible endpoint', async () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-sync-'))
+  const server = await startJsonServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(
+      JSON.stringify({
+        value: {
+          list: [
+            {
+              lotteryDrawNum: '2026002',
+              lotteryDrawTime: '2026-01-02',
+              lotteryDrawResult: '4 5 6',
+            },
+            {
+              lotteryDrawNum: '2026001',
+              lotteryDrawTime: '2026-01-01',
+              lotteryDrawResult: '1 2 3',
+            },
+          ],
+        },
+      }),
+    )
+  })
+
+  try {
+    const result = await runCli(['sync', '--source', 'official', '--lottery', 'pl3', '--limit', '2'], {
+      env: {
+        LOTTERYMCP_DATA_DIR: tempDir,
+        LOTTERYMCP_SPORTTERY_API_URL: server.origin,
+      },
+    })
+
+    assert.equal(result.status, 0)
+    assert.match(result.stdout, /同步完成/)
+    const saved = JSON.parse(readFileSync(path.join(tempDir, 'pl3.json'), 'utf8'))
+    assert.equal(saved.provider, 'official')
+    assert.equal(saved.records.length, 2)
+    assert.equal(saved.records[0].period, '2026002')
+    assert.deepEqual(saved.records[0].numbersList, [4, 5, 6])
+  } finally {
+    await server.close()
+  }
+})
+
+test('cli sync rejects non-pl3 official lottery types', async () => {
+  const result = await runCli(['sync', '--source', 'official', '--lottery', 'fc3d', '--limit', '2'])
+
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /未支持的官方彩种: fc3d/)
+  assert.match(result.stdout, /支持彩种: pl3/)
+})
+
+test('cli sync --all only writes the pl3 official cache', async () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-sync-all-'))
+  const server = await startJsonServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(
+      JSON.stringify({
+        value: {
+          list: [
+          {
+            lotteryDrawNum: '2026001',
+            lotteryDrawTime: '2026-01-01',
+            lotteryDrawResult: '1 2 3',
+          },
+        ],
+        },
+      }),
+    )
+  })
+
+  try {
+    const result = await runCli(['sync', '--source', 'official', '--all', '--limit', '1'], {
+      env: {
+        LOTTERYMCP_DATA_DIR: tempDir,
+        LOTTERYMCP_SPORTTERY_API_URL: server.origin,
+      },
+    })
+
+    assert.equal(result.status, 0)
+    assert.match(result.stdout, /正在同步 pl3/)
+    assert.doesNotThrow(() => readFileSync(path.join(tempDir, 'pl3.json'), 'utf8'))
+  } finally {
+    await server.close()
+  }
+})
+
+test('cli doctor supports official mode without a token when cache exists', async () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-official-doctor-'))
+  const server = await startJsonServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(
+      JSON.stringify({
+        value: {
+          list: [
+          {
+            lotteryDrawNum: '2026001',
+            lotteryDrawTime: '2026-01-01',
+            lotteryDrawResult: '1 2 3',
+          },
+        ],
+        },
+      }),
+    )
+  })
+
+  try {
+    const syncResult = await runCli(['sync', '--source', 'official', '--lottery', 'pl3', '--limit', '1'], {
+      env: {
+        LOTTERYMCP_DATA_DIR: tempDir,
+        LOTTERYMCP_SPORTTERY_API_URL: server.origin,
+      },
+    })
+    assert.equal(syncResult.status, 0)
+
+    const result = await runCli(['doctor'], {
+      env: {
+        LOTTERYMCP_DATA_MODE: 'official',
+        LOTTERYMCP_DATA_DIR: tempDir,
+        NEUXSBOT_API_BASE_URL: '',
+        NEUXSBOT_TOKEN: '',
+      },
+    })
+
+    assert.equal(result.status, 0)
+    assert.match(result.stdout, /DATA_MODE: official/)
+    assert.match(result.stdout, /官方本地数据源正常/)
+    assert.match(result.stdout, /数据来源: official/)
+    assert.doesNotMatch(result.stdout, /鉴权头:/)
+  } finally {
+    await server.close()
+  }
+})
+
+test('cli predict and analyze alias use the same TypeScript pl3 engine in official mode', async () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-cli-predict-'))
+  const records = Array.from({ length: 100 }, (_, index) => ({
+    lotteryType: 'pl3',
+    period: String(26001 + index),
+    drawDate: `2026-01-${String(index % 28 + 1).padStart(2, '0')}`,
+    numbers: `${index % 10},${(index + 3) % 10},${(index + 6) % 10}`,
+  })).reverse()
+  const cachePath = path.join(tempDir, 'pl3.json')
+  await import('node:fs/promises').then(({ writeFile }) => writeFile(cachePath, JSON.stringify({ records }), 'utf8'))
+  const env = {
+    LOTTERYMCP_DATA_MODE: 'official',
+    LOTTERYMCP_DATA_DIR: tempDir,
+    NEUXSBOT_API_BASE_URL: '',
+    NEUXSBOT_TOKEN: '',
+  }
+
+  const prediction = await runCli(['predict', '--periods', '100', '--tickets', '3', '--play', 'mixed'], { env })
+  assert.equal(prediction.status, 0)
+  assert.match(prediction.stdout, /排列3预测结果/)
+  assert.match(prediction.stdout, /玩法\/注数: mixed \/ 3/)
+  assert.doesNotMatch(prediction.stdout, /Python/)
+
+  const alias = await runCli(['analyze', 'p3', '--periods', '100', '--tickets', '3'], { env })
+  assert.equal(alias.status, 0)
+  assert.match(alias.stdout, /排列3预测结果/)
+
+  const rejected = await runCli(['analyze', 'fc3d'], { env })
+  assert.equal(rejected.status, 1)
+  assert.match(rejected.stderr, /未知参数: fc3d/)
 })

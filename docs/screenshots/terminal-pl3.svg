@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="942" viewBox="0 0 1500 942">
+<rect width="1500" height="942" fill="#08090b"/>
+<rect x="32" y="32" width="1436" height="878" rx="8" fill="#111318" stroke="#343942" stroke-width="2"/>
+<circle cx="76" cy="72" r="8" fill="#ff5f57"/>
+<circle cx="104" cy="72" r="8" fill="#febc2e"/>
+<circle cx="132" cy="72" r="8" fill="#28c840"/>
+<text x="174" y="82" fill="#f3f5f7" font-size="29" font-family="Consolas, Microsoft YaHei UI, monospace">排列3预测与 Walk-forward 回测</text>
+<text x="72" y="132" fill="#7ee787" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">$ lotterymcp predict --periods 200 --tickets 10 --play mixed</text>
+<line x1="64" y1="154" x2="1436" y2="154" stroke="#2a2e35"/>
+<text x="72" y="194" fill="#f2cc60" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">截止期号: 26187</text>
+<text x="72" y="232" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">训练记录: 200</text>
+<text x="72" y="270" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">模型版本: weighted-frequency-v1</text>
+<text x="72" y="308" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">玩法/注数: mixed / 10</text>
+<text x="72" y="365" fill="#8ab4ff" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">候选票:</text>
+<text x="72" y="403" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  1. direct  086  score=0.184512</text>
+<text x="72" y="441" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  2. direct  685  score=0.181204</text>
+<text x="72" y="479" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  3. direct  142  score=0.177891</text>
+<text x="72" y="517" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  4. direct  352  score=0.175223</text>
+<text x="72" y="555" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  5. group3  665  score=0.169843</text>
+<text x="72" y="593" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  6. group3  885  score=0.168104</text>
+<text x="72" y="631" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  7. group3  225  score=0.166882</text>
+<text x="72" y="669" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  8. group3  448  score=0.164311</text>
+<text x="72" y="707" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">  9. group6  058  score=0.161204</text>
+<text x="72" y="745" fill="#d9dde3" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace"> 10. group6  256  score=0.159876</text>
+<text x="72" y="802" fill="#c4b5fd" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">回测: 100 期 | 成本 2000 | 返回 1730 | ROI -0.135</text>
+<text x="72" y="840" fill="#9da5b4" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">score 仅用于排序；奖金与 ROI 为历史模拟。</text>
+</svg>

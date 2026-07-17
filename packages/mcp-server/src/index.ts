@@ -5,16 +5,23 @@ import {
   LOTTERY_MCP_TOOLS,
   McpApiError,
   createLotteryMcpClient,
+  createPl3PredictionService,
   formatMcpApiError,
+  type Pl3PayoutConfig,
+  type Pl3PlayType,
   type LotteryMcpClientConfig,
 } from 'lotterymcp-core'
 import { z } from 'zod'
 
 export const MCP_SERVER_TRANSPORT = 'stdio'
-export const MCP_SERVER_TOOLS = [...LOTTERY_MCP_TOOLS]
+export const MCP_SERVER_TOOLS = [...LOTTERY_MCP_TOOLS, 'lottery.predict']
+
+export type LotteryMcpServerOptions = LotteryMcpClientConfig & {
+  predictionPayouts?: Partial<Pl3PayoutConfig>
+}
 
 type LotteryMcpClientLike = {
-  getLatest: (input: { lotteryType: string }) => Promise<any>
+  getLatest: (input: { lotteryType?: string }) => Promise<any>
   getHistory: (input: {
     lotteryType?: string
     period?: string
@@ -24,7 +31,7 @@ type LotteryMcpClientLike = {
     limit?: number
   }) => Promise<any>
   getPeriods: (input: {
-    lotteryType: string
+    lotteryType?: string
     page?: number
     limit?: number
   }) => Promise<any>
@@ -86,26 +93,35 @@ const withToolExecution = async (callback: () => Promise<unknown>) => {
 
 export const createLotteryToolCatalog = (
   client: LotteryMcpClientLike,
-  options?: { defaultPeriods?: number | string },
+  options?: {
+    defaultPeriods?: number | string
+    dataDir?: string
+    predictionPayouts?: Partial<Pl3PayoutConfig>
+  },
 ): LotteryToolDefinition[] => {
   const fallbackLimit = normalizeDefaultPeriods(options?.defaultPeriods)
+  const predictionService = createPl3PredictionService(client, {
+    defaultPeriods: 200,
+    dataDir: options?.dataDir,
+    payouts: options?.predictionPayouts,
+  })
 
   return [
     {
       name: 'lottery.latest',
-      description: '获取指定彩种的最新开奖数据。',
+      description: '获取排列3最新开奖数据。',
       inputSchema: {
-        lotteryType: z.string().min(1).describe('彩种代码，例如 fc3d、ssq、dlt。'),
+        lotteryType: z.string().optional().describe('可选。当前版本仅支持 pl3，省略时默认 pl3。'),
       },
       handler: async (args) =>
         withToolExecution(() =>
-          client.getLatest({ lotteryType: String(args.lotteryType || '').trim() })),
+          client.getLatest({ lotteryType: typeof args.lotteryType === 'string' ? args.lotteryType : undefined })),
     },
     {
       name: 'lottery.history',
-      description: '查询历史开奖列表，未传 limit 时默认使用本地配置期数。',
+      description: '查询排列3历史开奖列表，未传 limit 时默认使用本地配置期数。',
       inputSchema: {
-        lotteryType: z.string().optional().describe('可选。彩种代码，例如 fc3d、ssq、dlt。'),
+        lotteryType: z.string().optional().describe('可选。当前版本仅支持 pl3，省略时默认 pl3。'),
         period: z.string().optional().describe('可选。按期号筛选。'),
         fromDate: z.string().optional().describe('可选。开始日期，格式 YYYY-MM-DD。'),
         toDate: z.string().optional().describe('可选。结束日期，格式 YYYY-MM-DD。'),
@@ -125,25 +141,25 @@ export const createLotteryToolCatalog = (
     },
     {
       name: 'lottery.periods',
-      description: '列出某个彩种的历史期号列表。',
+      description: '列出排列3历史期号列表。',
       inputSchema: {
-        lotteryType: z.string().min(1).describe('彩种代码，例如 fc3d、ssq、dlt。'),
+        lotteryType: z.string().optional().describe('可选。当前版本仅支持 pl3，省略时默认 pl3。'),
         page: z.number().int().positive().optional().describe('可选。分页页码。'),
         limit: z.number().int().positive().optional().describe('可选。返回条数。'),
       },
       handler: async (args) =>
         withToolExecution(() =>
           client.getPeriods({
-            lotteryType: String(args.lotteryType || '').trim(),
+            lotteryType: typeof args.lotteryType === 'string' ? args.lotteryType : undefined,
             page: typeof args.page === 'number' ? args.page : undefined,
             limit: typeof args.limit === 'number' ? args.limit : fallbackLimit,
           })),
     },
     {
       name: 'lottery.summary',
-      description: '查看单个彩种或全部可用彩种的数据摘要。',
+      description: '查看排列3数据摘要。',
       inputSchema: {
-        lotteryType: z.string().optional().describe('可选。彩种代码，例如 fc3d、ssq、dlt。'),
+        lotteryType: z.string().optional().describe('可选。当前版本仅支持 pl3，省略时默认 pl3。'),
       },
       handler: async (args) =>
         withToolExecution(() =>
@@ -151,18 +167,37 @@ export const createLotteryToolCatalog = (
             lotteryType: typeof args.lotteryType === 'string' ? args.lotteryType : undefined,
           })),
     },
+    {
+      name: 'lottery.predict',
+      description: '基于排列3历史数据生成确定性候选排序和无未来数据泄漏的 walk-forward 回测。评分不是中奖概率。',
+      inputSchema: {
+        lotteryType: z.string().optional().describe('可选。当前版本仅支持 pl3，省略时默认 pl3。'),
+        periods: z.number().int().min(100).max(1000).optional().describe('可选。读取历史期数，默认 200。'),
+        tickets: z.number().int().min(1).max(100).optional().describe('可选。候选注数，默认 10。'),
+        playType: z.enum(['direct', 'group3', 'group6', 'mixed']).optional().describe('可选。玩法，默认 mixed。'),
+      },
+      handler: async (args) =>
+        withToolExecution(() => predictionService.predict({
+          lotteryType: typeof args.lotteryType === 'string' ? args.lotteryType : undefined,
+          periods: typeof args.periods === 'number' ? args.periods : undefined,
+          tickets: typeof args.tickets === 'number' ? args.tickets : undefined,
+          playType: typeof args.playType === 'string' ? args.playType as Pl3PlayType : undefined,
+        })),
+    },
   ]
 }
 
-export const createLotteryMcpServer = (options: LotteryMcpClientConfig) => {
+export const createLotteryMcpServer = (options: LotteryMcpServerOptions) => {
   const client = createLotteryMcpClient(options)
   const server = new McpServer({
     name: 'neuxsbot-lottery-mcp',
-    version: '0.1.0',
+    version: '0.2.0',
   })
 
   const toolCatalog = createLotteryToolCatalog(client, {
     defaultPeriods: options.defaultPeriods,
+    dataDir: options.dataDir,
+    predictionPayouts: options.predictionPayouts,
   })
 
   toolCatalog.forEach((tool) => {
@@ -183,7 +218,7 @@ export const createLotteryMcpServer = (options: LotteryMcpClientConfig) => {
   }
 }
 
-export const startLotteryMcpStdioServer = async (options: LotteryMcpClientConfig) => {
+export const startLotteryMcpStdioServer = async (options: LotteryMcpServerOptions) => {
   const { client, server, toolCatalog } = createLotteryMcpServer(options)
   const transport = new StdioServerTransport()
   await server.connect(transport)

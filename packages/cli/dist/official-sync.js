@@ -1,0 +1,253 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { normalizePl3Records, settlePl3Predictions, writeJsonAtomically, } from 'lotterymcp-core';
+export const OFFICIAL_LOTTERY_TYPES = ['pl3'];
+const OFFICIAL_LOTTERY = {
+    lotteryType: 'pl3',
+    label: '排列3',
+    gameNo: '35',
+    fallbackLotteryId: '283',
+    fallbackSourceUrl: 'https://www.zhcw.com/kjxx/pl3/',
+    sourceUrl: 'https://www.lottery.gov.cn/zst/pls/',
+    referer: 'https://www.lottery.gov.cn/',
+};
+const DEFAULT_DATA_DIR = '.lotterymcp-data';
+const MAX_LIMIT = 1000;
+const PAGE_SIZE = 30;
+const PAGE_DELAY_MS = 300;
+const normalizeLimit = (value) => Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), MAX_LIMIT) : 500;
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const splitNumbers = (value) => String(value || '')
+    .trim()
+    .split(/[,\s]+/)
+    .filter(Boolean)
+    .map((item) => Number(item));
+export const parseJsonOrJsonp = (rawText) => {
+    const trimmed = rawText.trim();
+    const jsonText = trimmed.startsWith('{') || trimmed.startsWith('[')
+        ? trimmed
+        : trimmed.replace(/^[^(]*\(/, '').replace(/\);\s*$/, '').replace(/\)\s*$/, '');
+    return JSON.parse(jsonText);
+};
+const fetchPayload = async (url, referer, fetchImpl) => {
+    const response = await fetchImpl(url, {
+        method: 'GET',
+        headers: {
+            accept: 'application/json,text/plain,*/*',
+            referer,
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36',
+        },
+    });
+    const rawText = await response.text();
+    if (!response.ok) {
+        throw new Error(`公开数据请求失败: HTTP ${response.status} ${response.statusText} (${url.toString()})`);
+    }
+    try {
+        return parseJsonOrJsonp(rawText);
+    }
+    catch {
+        throw new Error(`公开数据返回了无法解析的内容 (${url.toString()})`);
+    }
+};
+const normalizeSportteryRows = (payload) => {
+    const rows = Array.isArray(payload?.value?.list) ? payload.value.list : [];
+    return rows.map((row) => {
+        const numbersList = splitNumbers(row.lotteryDrawResult);
+        return {
+            lotteryType: 'pl3',
+            period: String(row.lotteryDrawNum || ''),
+            drawDate: String(row.lotteryDrawTime || row.lotteryDrawDate || '').slice(0, 10),
+            numbers: numbersList.join(','),
+            numbersList,
+            source: 'official',
+            sourceUrl: OFFICIAL_LOTTERY.sourceUrl,
+            rawProvider: 'sporttery',
+        };
+    });
+};
+const normalizeZhcwRows = (payload) => {
+    const rows = Array.isArray(payload?.data) ? payload.data : [];
+    return rows.map((row) => {
+        const numbersList = [...splitNumbers(row.frontWinningNum), ...splitNumbers(row.backWinningNum)];
+        return {
+            lotteryType: 'pl3',
+            period: String(row.issue || ''),
+            drawDate: String(row.openTime || '').slice(0, 10),
+            numbers: numbersList.join(','),
+            numbersList,
+            source: 'official',
+            sourceUrl: OFFICIAL_LOTTERY.fallbackSourceUrl,
+            rawProvider: 'zhcw',
+        };
+    });
+};
+const validateSyncRecords = (records) => {
+    const normalized = normalizePl3Records(records);
+    for (const record of normalized) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(record.drawDate) || !Number.isFinite(Date.parse(record.drawDate))) {
+            throw new Error(`排列3第 ${record.period} 期的开奖日期无效: ${record.drawDate || '(空)'}`);
+        }
+    }
+    return normalized;
+};
+const fetchPaginated = async (limit, fetchPage, pageDelayMs) => {
+    const records = [];
+    const fingerprints = new Set();
+    let page = 1;
+    while (records.length < limit) {
+        const pageSize = PAGE_SIZE;
+        const pageRecords = await fetchPage(page, pageSize);
+        if (pageRecords.length === 0)
+            break;
+        const fingerprint = pageRecords.map((record) => record.period).join('|');
+        if (fingerprints.has(fingerprint)) {
+            throw new Error(`公开数据源在第 ${page} 页返回了重复页面`);
+        }
+        fingerprints.add(fingerprint);
+        records.push(...pageRecords);
+        if (pageRecords.length < pageSize)
+            break;
+        page += 1;
+        if (records.length < limit && pageDelayMs > 0)
+            await delay(pageDelayMs);
+    }
+    return records.slice(0, limit);
+};
+const fetchSportteryRecords = async (limit, fetchImpl) => {
+    const baseUrl = process.env.LOTTERYMCP_SPORTTERY_API_URL ||
+        'https://webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry';
+    return fetchPaginated(limit, async (page, pageSize) => {
+        const url = new URL(baseUrl);
+        url.search = new URLSearchParams({
+            gameNo: OFFICIAL_LOTTERY.gameNo,
+            provinceId: '0',
+            pageSize: String(pageSize),
+            isVerify: '1',
+            pageNo: String(page),
+        }).toString();
+        return normalizeSportteryRows(await fetchPayload(url, OFFICIAL_LOTTERY.referer, fetchImpl));
+    }, fetchImpl === fetch ? PAGE_DELAY_MS : 0);
+};
+const fetchZhcwRecords = async (limit, fetchImpl) => {
+    const baseUrl = process.env.LOTTERYMCP_ZHCW_API_URL || 'https://jc.zhcw.com/port/client_json.php';
+    return fetchPaginated(limit, async (page, pageSize) => {
+        const url = new URL(baseUrl);
+        url.search = new URLSearchParams({
+            transactionType: '10001001',
+            lotteryId: OFFICIAL_LOTTERY.fallbackLotteryId,
+            issueCount: String(limit),
+            startIssue: '',
+            endIssue: '',
+            startDate: '',
+            endDate: '',
+            type: '0',
+            pageNum: String(page),
+            pageSize: String(pageSize),
+            callback: 'callback',
+        }).toString();
+        return normalizeZhcwRows(await fetchPayload(url, OFFICIAL_LOTTERY.fallbackSourceUrl, fetchImpl));
+    }, fetchImpl === fetch ? PAGE_DELAY_MS : 0);
+};
+export const fetchOfficialLotteryRecords = async (lotteryType, limit, fetchImpl = fetch) => {
+    if (lotteryType !== 'pl3')
+        throw new Error(`当前版本只支持排列3(pl3)，不支持 ${lotteryType}。`);
+    const normalizedLimit = normalizeLimit(limit);
+    let primaryError;
+    try {
+        const records = await fetchSportteryRecords(normalizedLimit, fetchImpl);
+        if (records.length === 0)
+            throw new Error('中国体彩网没有返回可用记录');
+        validateSyncRecords(records);
+        return records;
+    }
+    catch (error) {
+        primaryError = error;
+    }
+    try {
+        const records = await fetchZhcwRecords(normalizedLimit, fetchImpl);
+        if (records.length === 0)
+            throw new Error('中彩网没有返回可用记录');
+        validateSyncRecords(records);
+        return records;
+    }
+    catch (fallbackError) {
+        throw new Error(`排列3公开数据源均不可用。体彩网: ${primaryError instanceof Error ? primaryError.message : String(primaryError)}；` +
+            `中彩网: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
+    }
+};
+const readExistingRecords = async (outputPath) => {
+    try {
+        const parsed = JSON.parse(await readFile(outputPath, 'utf8'));
+        return Array.isArray(parsed) ? parsed : Array.isArray(parsed?.records) ? parsed.records : [];
+    }
+    catch (error) {
+        if (error?.code === 'ENOENT')
+            return [];
+        throw new Error(`现有排列3缓存格式无效: ${outputPath}`);
+    }
+};
+const mergeRecords = (existing, incoming, limit) => {
+    const sourceByPeriod = new Map();
+    for (const record of [...existing, ...incoming]) {
+        sourceByPeriod.set(String(record.period || ''), record);
+    }
+    const normalized = validateSyncRecords([...sourceByPeriod.values()]).slice(-limit).reverse();
+    return normalized.map((record) => {
+        const source = sourceByPeriod.get(record.period);
+        return {
+            ...record,
+            source: String(source?.source || 'official'),
+            sourceUrl: String(source?.sourceUrl || OFFICIAL_LOTTERY.sourceUrl),
+            rawProvider: String(source?.rawProvider || 'import'),
+        };
+    });
+};
+const writeCache = async (dataDir, incoming, limit, sourceUrl) => {
+    const normalizedLimit = normalizeLimit(limit);
+    const resolvedDataDir = path.resolve(dataDir || DEFAULT_DATA_DIR);
+    const outputPath = path.join(resolvedDataDir, 'pl3.json');
+    const existing = await readExistingRecords(outputPath);
+    const records = mergeRecords(existing, incoming, normalizedLimit);
+    const warnings = records.length < normalizedLimit
+        ? [`请求 ${normalizedLimit} 期，当前有效缓存为 ${records.length} 期。`]
+        : [];
+    await writeJsonAtomically(outputPath, {
+        provider: 'official',
+        lotteryType: 'pl3',
+        sourceUrl,
+        generatedAt: new Date().toISOString(),
+        recordCount: records.length,
+        latestPeriod: records[0]?.period || null,
+        records,
+    });
+    const settlement = await settlePl3Predictions(path.join(resolvedDataDir, 'pl3-predictions.json'), records);
+    return {
+        lotteryType: 'pl3',
+        records,
+        outputPath,
+        sourceUrl,
+        warnings,
+        settledCount: settlement.settledCount,
+    };
+};
+export const syncOfficialLottery = async (options) => {
+    const records = await fetchOfficialLotteryRecords(options.lotteryType, options.limit, options.fetchImpl);
+    const sourceUrl = String(records[0]?.sourceUrl || OFFICIAL_LOTTERY.sourceUrl);
+    return writeCache(options.dataDir, records, options.limit, sourceUrl);
+};
+export const syncOfficialFile = async (options) => {
+    const filePath = path.resolve(options.filePath);
+    let parsed;
+    try {
+        parsed = JSON.parse(await readFile(filePath, 'utf8'));
+    }
+    catch (error) {
+        throw new Error(`无法读取排列3 JSON 文件: ${filePath} (${error instanceof Error ? error.message : String(error)})`);
+    }
+    const records = Array.isArray(parsed) ? parsed : parsed?.records;
+    if (!Array.isArray(records))
+        throw new Error('导入文件必须是记录数组或包含 records 数组的对象。');
+    validateSyncRecords(records);
+    return writeCache(options.dataDir, records, options.limit, filePath);
+};
+export const isOfficialLotteryType = (value) => value === 'pl3';

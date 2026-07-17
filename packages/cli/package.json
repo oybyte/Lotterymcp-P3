@@ -1,9 +1,9 @@
 {
   "name": "neuxnbcp",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "private": false,
   "type": "module",
-  "description": "Lotterymcp CLI for 福彩3D、排列3、双色球、大乐透、排列5、七星彩、快乐8 MCP access",
+  "description": "Lotterymcp CLI for P3 history sync, MCP access, prediction, and walk-forward backtesting",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,8 +20,8 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "lotterymcp-core": "0.1.0",
-    "lotterymcp-server": "0.1.0"
+    "lotterymcp-core": "0.2.0",
+    "lotterymcp-server": "0.2.0"
   },
   "engines": {
     "node": ">=20"
@@ -32,13 +32,9 @@
     "lottery",
     "neuxsbot",
     "nbcp",
-    "fc3d",
     "pl3",
-    "ssq",
-    "dlt",
-    "pl5",
-    "qxc",
-    "kl8"
+    "p3",
+    "backtest"
   ],
   "homepage": "https://www.neuxsbot.com",
   "publishConfig": {

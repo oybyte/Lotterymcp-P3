@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const serverEntryUrl = pathToFileURL(path.join(repoRoot, 'packages', 'mcp-server', 'dist', 'index.js')).href
 
-test('mcp server exposes the four lottery tools through the public tool catalog', async () => {
+test('mcp server exposes the five P3 tools through the public tool catalog', async () => {
   const { createLotteryToolCatalog } = await import(serverEntryUrl)
 
   const catalog = createLotteryToolCatalog({
@@ -18,8 +18,36 @@ test('mcp server exposes the four lottery tools through the public tool catalog'
 
   assert.deepEqual(
     catalog.map((item) => item.name),
-    ['lottery.latest', 'lottery.history', 'lottery.periods', 'lottery.summary'],
+    ['lottery.latest', 'lottery.history', 'lottery.periods', 'lottery.summary', 'lottery.predict'],
   )
+})
+
+test('predict tool defaults to pl3 and rejects other lottery types', async () => {
+  const { createLotteryToolCatalog } = await import(serverEntryUrl)
+  const records = Array.from({ length: 100 }, (_, index) => ({
+    lotteryType: 'pl3',
+    period: String(26001 + index),
+    drawDate: `2026-01-${String(index % 28 + 1).padStart(2, '0')}`,
+    numbers: `${index % 10},${(index + 1) % 10},${(index + 2) % 10}`,
+  })).reverse()
+  const catalog = createLotteryToolCatalog({
+    getLatest: async () => ({ data: null, meta: {} }),
+    getHistory: async () => ({
+      data: records,
+      meta: { plan: 'public', provider: 'official', requestLimit: null, generatedAt: new Date().toISOString(), hasMore: false },
+    }),
+    getPeriods: async () => ({ data: [], meta: {} }),
+    getSummary: async () => ({ data: null, meta: {} }),
+  }, { dataDir: path.join(repoRoot, '.tmp-tests', 'mcp-predict') })
+  const predictTool = catalog.find((item) => item.name === 'lottery.predict')
+
+  const success = await predictTool.handler({ tickets: 3 })
+  assert.equal(success.isError, false)
+  assert.match(success.content[0].text, /"lotteryType": "pl3"/)
+
+  const rejected = await predictTool.handler({ lotteryType: 'fc3d' })
+  assert.equal(rejected.isError, true)
+  assert.equal(rejected.structuredContent.code, 'LOTTERYMCP_ONLY_PL3_SUPPORTED')
 })
 
 test('latest tool delegates to the client and returns text content', async () => {
@@ -30,7 +58,7 @@ test('latest tool delegates to the client and returns text content', async () =>
       calls.push(input)
       return {
         data: {
-          lotteryType: 'fc3d',
+          lotteryType: 'pl3',
           period: '2026048',
           numbers: '1 2 3',
           drawDate: '2026-04-08',
@@ -49,11 +77,11 @@ test('latest tool delegates to the client and returns text content', async () =>
   })
 
   const latestTool = catalog.find((item) => item.name === 'lottery.latest')
-  const result = await latestTool.handler({ lotteryType: 'fc3d' })
+  const result = await latestTool.handler({})
 
-  assert.deepEqual(calls, [{ lotteryType: 'fc3d' }])
+  assert.deepEqual(calls, [{ lotteryType: undefined }])
   assert.equal(result.isError, false)
   assert.equal(result.content[0].type, 'text')
-  assert.match(result.content[0].text, /fc3d/)
+  assert.match(result.content[0].text, /pl3/)
   assert.match(result.content[0].text, /2026048/)
 })

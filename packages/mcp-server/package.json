@@ -1,9 +1,9 @@
 {
   "name": "lotterymcp-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "type": "module",
-  "description": "Lotterymcp stdio server for the NEUXSBOT lottery service",
+  "description": "Lotterymcp stdio server for P3 history and deterministic prediction",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,8 +14,8 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.22.0",
-    "lotterymcp-core": "0.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "lotterymcp-core": "0.2.0",
     "zod": "^3.24.1"
   },
   "engines": {
@@ -24,6 +24,7 @@
   "keywords": [
     "mcp",
     "lottery",
+    "pl3",
     "neuxsbot",
     "server"
   ],
