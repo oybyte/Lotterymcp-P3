@@ -1,0 +1,58 @@
+import { PL3_LOTTERY_TYPE } from './pl3-prediction.js';
+import type { Pl3Store } from './pl3-store.js';
+export declare const PL3_FEATURE_VERSION = "pl3-features-v1";
+export declare const PL3_DEFAULT_FEATURE_WINDOWS: readonly [10, 30, 50, 100, 200, 500];
+export type Pl3NumberType = 'triple' | 'group3' | 'group6';
+export type Pl3WindowFeatures = {
+    requestedWindow: number;
+    availableCount: number;
+    previousAvailableCount: number;
+    positionCounts: number[][];
+    positionFrequency: number[][];
+    globalDigitCounts: number[];
+    globalDigitFrequency: number[];
+    sumCounts: number[];
+    sumFrequency: number[];
+    spanCounts: number[];
+    spanFrequency: number[];
+    oddCountCounts: number[];
+    oddCountFrequency: number[];
+    numberTypeCounts: Record<Pl3NumberType, number>;
+    numberTypeFrequency: Record<Pl3NumberType, number>;
+    meanIntervals: Array<Array<number | null>>;
+    positionEntropy: number[];
+    positionConcentration: number[];
+    positionFrequencyChange: number[][] | null;
+    positionJsDivergence: number[] | null;
+};
+export type Pl3FeaturePayload = {
+    schemaVersion: 1;
+    lotteryType: typeof PL3_LOTTERY_TYPE;
+    datasetSnapshotId: string;
+    afterPeriod: string;
+    featureVersion: typeof PL3_FEATURE_VERSION;
+    windows: number[];
+    recordCount: number;
+    currentOmission: number[][];
+    windowFeatures: Record<string, Pl3WindowFeatures>;
+};
+export type Pl3FeatureSnapshot = {
+    featureSnapshotId: string;
+    datasetSnapshotId: string;
+    afterPeriod: string;
+    featureVersion: typeof PL3_FEATURE_VERSION;
+    windows: number[];
+    windowConfigHash: string;
+    payloadHash: string;
+    codeCommit: string | null;
+    createdAt: string;
+    payload: Pl3FeaturePayload;
+};
+export declare const createPl3FeatureSnapshot: (store: Pl3Store, input: {
+    datasetSnapshotId: string;
+    afterPeriod: string;
+    featureVersion?: typeof PL3_FEATURE_VERSION;
+    windows?: readonly number[];
+    codeCommit?: string;
+}) => Pl3FeatureSnapshot;
+export declare const getPl3FeatureSnapshot: (store: Pl3Store, featureSnapshotId: string) => Pl3FeatureSnapshot | null;

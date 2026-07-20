@@ -30,7 +30,7 @@ test('publishable packages expose registry metadata and cli package includes a R
 
   for (const packageDir of packageDirs) {
     const manifest = readJson(path.join('packages', packageDir, 'package.json'))
-    assert.equal(manifest.version, '0.3.0')
+    assert.equal(manifest.version, '0.5.0')
     assert.equal(manifest.private, false)
     assert.equal(manifest.publishConfig?.access, 'public')
     assert.equal(manifest.license, 'MIT')

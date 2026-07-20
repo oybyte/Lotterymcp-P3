@@ -466,7 +466,17 @@ export const writeJsonAtomically = async (targetPath, payload) => {
     const temporaryPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
     try {
         await writeFile(temporaryPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
-        await rename(temporaryPath, targetPath);
+        for (let attempt = 0;; attempt += 1) {
+            try {
+                await rename(temporaryPath, targetPath);
+                break;
+            }
+            catch (error) {
+                if (!['EACCES', 'EBUSY', 'EPERM'].includes(error?.code) || attempt >= 5)
+                    throw error;
+                await sleep(50 * 2 ** attempt);
+            }
+        }
     }
     finally {
         await unlink(temporaryPath).catch(() => undefined);

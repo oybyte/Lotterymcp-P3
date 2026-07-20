@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "name": "P3 weighted-frequency baseline",
+  "hypothesis": "加权频率排序在冻结前开发区的 normalized rank 优于均匀和固定种子随机基线。",
+  "mode": "confirmatory",
+  "researchBatchId": "p3-baseline-001",
+  "datasetSnapshotId": "REPLACE_WITH_DATASET_SNAPSHOT_ID",
+  "featureVersion": "pl3-features-v1",
+  "models": [
+    "uniform-theory",
+    "random-monte-carlo",
+    {
+      "modelId": "weighted-frequency-v1",
+      "params": {
+        "historyWindow": 200
+      },
+      "searchSpace": {
+        "historyWindow": [100, 200, 500]
+      }
+    }
+  ],
+  "primaryMetric": "normalizedRank.mean",
+  "exclusionRules": [
+    "不使用 conflict 或 single-source 数据",
+    "ROI 不参与选参或晋级"
+  ],
+  "split": {
+    "minTrain": 1000,
+    "frozenCount": 1000,
+    "training": "expanding",
+    "innerValidation": 50,
+    "innerStep": 50,
+    "outerTest": 50,
+    "outerStep": 50
+  },
+  "bootstrap": {
+    "blockLength": 30,
+    "resamples": 10000
+  },
+  "randomSeed": 20260717,
+  "resource": {
+    "maxRuntimeSeconds": 7200,
+    "maxCpuFraction": 0.5
+  }
+}

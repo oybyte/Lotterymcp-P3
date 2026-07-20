@@ -1,7 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { PL3_DEFAULT_PERIODS, PL3_LOTTERY_TYPE, PL3_MAX_PERIODS, PL3_MIN_RECORDS, Pl3PredictionError, getPl3PredictionLedgerSummary, isValidPl3DrawDate, normalizePl3Records, predictPl3, settlePl3Predictions, upsertPl3Prediction, } from './pl3-prediction.js';
+import { hasPl3Database, openPl3Store } from './pl3-store.js';
 export * from './pl3-prediction.js';
+export * from './pl3-store.js';
+export * from './pl3-features.js';
+export * from './pl3-experiments.js';
 /** @deprecated Provider selection is dynamic. Read meta.provider instead. */
 export const LOTTERY_MCP_PROVIDER = 'remote';
 export const PL3_DATA_TOOLS = [
@@ -155,6 +159,25 @@ const normalizePl3DrawRecords = (records, context) => {
 };
 const readOfficialCache = async (dataDir, lotteryType) => {
     const normalizedLotteryType = normalizeLotteryType(lotteryType);
+    if (hasPl3Database(dataDir)) {
+        const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true });
+        try {
+            const count = store.getRecordCount();
+            return store.getRecords({ page: 1, limit: Math.max(count, 1) }).map((record) => ({
+                lotteryType: record.lotteryType,
+                period: record.period,
+                drawDate: record.drawDate,
+                numbers: record.numbers,
+                numbersList: record.numbersList,
+                source: 'official',
+                sourceUrl: record.sourceUrl,
+                rawProvider: record.provider,
+            }));
+        }
+        finally {
+            store.close();
+        }
+    }
     const cachePath = path.join(dataDir, `${normalizedLotteryType}.json`);
     let rawText = '';
     try {
@@ -224,7 +247,7 @@ export const createOfficialLocalProvider = (config = {}) => {
         getHealth: async () => ({
             ok: true,
             service: 'lotterymcp-official-local',
-            transport: 'local-json',
+            transport: hasPl3Database(dataDir) ? 'local-sqlite' : 'local-json',
             provider: 'official',
             dataDir,
             tools: [...PL3_DATA_TOOLS],

@@ -1,7 +1,7 @@
 {
   "name": "nexusbot-lottery-mcp",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "Lotterymcp monorepo for P3 history, MCP access, and deterministic analysis",
   "license": "MIT",
   "homepage": "https://www.neuxsbot.com",
@@ -22,7 +22,7 @@
   "scripts": {
     "build": "tsc -b packages/core packages/mcp-server packages/cli",
     "dev": "npm run build && node packages/cli/dist/index.js --help",
-    "test": "npm run build && node --test tests/banner-render.test.mjs tests/cli-help.test.mjs tests/core-client.test.mjs tests/mcp-server.test.mjs tests/official-sync.test.mjs tests/pl3-prediction.test.mjs tests/publish-package.test.mjs",
+    "test": "npm run build && node --test tests/banner-render.test.mjs tests/cli-help.test.mjs tests/core-client.test.mjs tests/data-files.test.mjs tests/mcp-server.test.mjs tests/official-sync.test.mjs tests/pl3-experiments.test.mjs tests/pl3-features.test.mjs tests/pl3-prediction.test.mjs tests/pl3-store.test.mjs tests/publish-package.test.mjs",
     "docs:screenshots": "npm run build && node scripts/generate-doc-screenshots.mjs",
     "docs:screenshots:check": "npm run build && node scripts/generate-doc-screenshots.mjs --check"
   },

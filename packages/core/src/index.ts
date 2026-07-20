@@ -19,8 +19,12 @@ import {
   type Pl3Record,
   type Pl3SourceRecord,
 } from './pl3-prediction.js'
+import { hasPl3Database, openPl3Store } from './pl3-store.js'
 
 export * from './pl3-prediction.js'
+export * from './pl3-store.js'
+export * from './pl3-features.js'
+export * from './pl3-experiments.js'
 
 /** @deprecated Provider selection is dynamic. Read meta.provider instead. */
 export const LOTTERY_MCP_PROVIDER = 'remote'
@@ -358,6 +362,25 @@ const normalizePl3DrawRecords = (records: readonly Pl3SourceRecord[], context: s
 const readOfficialCache = async (dataDir: string, lotteryType: Pl3LotteryType) => {
   const normalizedLotteryType = normalizeLotteryType(lotteryType)
 
+  if (hasPl3Database(dataDir)) {
+    const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true })
+    try {
+      const count = store.getRecordCount()
+      return store.getRecords({ page: 1, limit: Math.max(count, 1) }).map<Pl3DrawRecord>((record) => ({
+        lotteryType: record.lotteryType,
+        period: record.period,
+        drawDate: record.drawDate,
+        numbers: record.numbers,
+        numbersList: record.numbersList,
+        source: 'official',
+        sourceUrl: record.sourceUrl,
+        rawProvider: record.provider,
+      }))
+    } finally {
+      store.close()
+    }
+  }
+
   const cachePath = path.join(dataDir, `${normalizedLotteryType}.json`)
   let rawText = ''
 
@@ -438,7 +461,7 @@ export const createOfficialLocalProvider = (
     getHealth: async () => ({
       ok: true,
       service: 'lotterymcp-official-local',
-      transport: 'local-json',
+      transport: hasPl3Database(dataDir) ? 'local-sqlite' : 'local-json',
       provider: 'official',
       dataDir,
       tools: [...PL3_DATA_TOOLS],

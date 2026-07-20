@@ -1,9 +1,14 @@
-import { readFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { gzipSync } from 'node:zlib'
+import { existsSync } from 'node:fs'
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   normalizePl3Records,
+  openPl3Store,
   settlePl3Predictions,
   writeJsonAtomically,
+  type Pl3ArchivePageInput,
   type Pl3DrawRecord,
   type Pl3SourceRecord,
 } from 'lotterymcp-core'
@@ -37,6 +42,48 @@ export type SyncOfficialPl3Result = {
   settledCount: number
 }
 
+export type OfficialRawResponse = {
+  provider: 'lottery-gov-cn' | 'zhcw'
+  page: number
+  url: string
+  statusCode: number
+  statusText: string
+  fetchedAt: string
+  contentType: string | null
+  rawText: string
+}
+
+export type OfficialSyncProvider = 'auto' | 'lottery-gov-cn' | 'zhcw'
+
+export type FetchOfficialPl3ArchiveResult = {
+  records: Pl3DrawRecord[]
+  provider: 'lottery-gov-cn' | 'zhcw'
+  sourceUrl: string
+  authoritativeTotal: number | null
+  rawResponses: OfficialRawResponse[]
+  warnings: string[]
+}
+
+export type SyncOfficialPl3StoreOptions = SyncOfficialPl3Options & {
+  full?: boolean
+  provider?: OfficialSyncProvider
+  resume?: boolean
+  restart?: boolean
+}
+
+export type SyncOfficialPl3StoreResult = SyncOfficialPl3Result & {
+  databasePath: string
+  provider: 'lottery-gov-cn' | 'zhcw'
+  authoritativeTotal: number | null
+  rawResponseCount: number
+  rawManifestPath: string
+  confirmedRecords: number
+  singleSourceRecords: number
+  conflictRecords: number
+  checkpointPath: string
+  resumedPageCount: number
+}
+
 const OFFICIAL_PL3: OfficialPl3Config = {
   gameNo: '35',
   fallbackLotteryId: '283',
@@ -47,11 +94,15 @@ const OFFICIAL_PL3: OfficialPl3Config = {
 
 const DEFAULT_DATA_DIR = '.lotterymcp-data'
 const MAX_LIMIT = 1000
+const MAX_ARCHIVE_LIMIT = 10000
 const PAGE_SIZE = 30
 const PAGE_DELAY_MS = 300
 
 const normalizeLimit = (value: number) =>
   Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), MAX_LIMIT) : 500
+
+const normalizeArchiveLimit = (value: number) =>
+  Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), MAX_ARCHIVE_LIMIT) : MAX_ARCHIVE_LIMIT
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -74,6 +125,8 @@ const fetchPayload = async (
   url: URL,
   referer: string,
   fetchImpl: typeof fetch,
+  context: Pick<OfficialRawResponse, 'provider' | 'page'>,
+  onResponse?: (response: OfficialRawResponse) => void,
 ) => {
   const response = await fetchImpl(url, {
     method: 'GET',
@@ -84,6 +137,15 @@ const fetchPayload = async (
     },
   })
   const rawText = await response.text()
+  onResponse?.({
+    ...context,
+    url: url.toString(),
+    statusCode: response.status,
+    statusText: response.statusText,
+    fetchedAt: new Date().toISOString(),
+    contentType: response.headers.get('content-type'),
+    rawText,
+  })
   if (!response.ok) {
     throw new Error(`公开数据请求失败: HTTP ${response.status} ${response.statusText} (${url.toString()})`)
   }
@@ -169,10 +231,15 @@ const fetchPaginated = async (
   return records.slice(0, limit)
 }
 
-const fetchSportteryRecords = async (limit: number, fetchImpl: typeof fetch) => {
+const fetchSportteryRecords = async (
+  limit: number,
+  fetchImpl: typeof fetch,
+  onResponse?: (response: OfficialRawResponse) => void,
+) => {
   const baseUrl = process.env.LOTTERYMCP_SPORTTERY_API_URL ||
     'https://webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry'
-  return fetchPaginated(limit, async (page, pageSize) => {
+  let authoritativeTotal: number | null = null
+  const records = await fetchPaginated(limit, async (page, pageSize) => {
     const url = new URL(baseUrl)
     url.search = new URLSearchParams({
       gameNo: OFFICIAL_PL3.gameNo,
@@ -181,13 +248,28 @@ const fetchSportteryRecords = async (limit: number, fetchImpl: typeof fetch) => 
       isVerify: '1',
       pageNo: String(page),
     }).toString()
-    return normalizeSportteryRows(await fetchPayload(url, OFFICIAL_PL3.referer, fetchImpl))
+    const payload = await fetchPayload(
+      url,
+      OFFICIAL_PL3.referer,
+      fetchImpl,
+      { provider: 'lottery-gov-cn', page },
+      onResponse,
+    )
+    const reportedTotal = Number(payload?.value?.total)
+    if (Number.isInteger(reportedTotal) && reportedTotal > 0) authoritativeTotal = reportedTotal
+    return normalizeSportteryRows(payload)
   }, fetchImpl === fetch ? PAGE_DELAY_MS : 0)
+  return { records, authoritativeTotal }
 }
 
-const fetchZhcwRecords = async (limit: number, fetchImpl: typeof fetch) => {
+const fetchZhcwRecords = async (
+  limit: number,
+  fetchImpl: typeof fetch,
+  onResponse?: (response: OfficialRawResponse) => void,
+) => {
   const baseUrl = process.env.LOTTERYMCP_ZHCW_API_URL || 'https://jc.zhcw.com/port/client_json.php'
-  return fetchPaginated(limit, async (page, pageSize) => {
+  let reportedTotal: number | null = null
+  const records = await fetchPaginated(limit, async (page, pageSize) => {
     const url = new URL(baseUrl)
     url.search = new URLSearchParams({
       transactionType: '10001001',
@@ -202,8 +284,94 @@ const fetchZhcwRecords = async (limit: number, fetchImpl: typeof fetch) => {
       pageSize: String(pageSize),
       callback: 'callback',
     }).toString()
-    return normalizeZhcwRows(await fetchPayload(url, OFFICIAL_PL3.fallbackSourceUrl, fetchImpl))
+    const payload = await fetchPayload(
+      url,
+      OFFICIAL_PL3.fallbackSourceUrl,
+      fetchImpl,
+      { provider: 'zhcw', page },
+      onResponse,
+    )
+    const total = Number(payload?.total)
+    if (Number.isInteger(total) && total > 0) reportedTotal = total
+    return normalizeZhcwRows(payload)
   }, fetchImpl === fetch ? PAGE_DELAY_MS : 0)
+  return {
+    records,
+    authoritativeTotal: reportedTotal !== null && reportedTotal < limit ? reportedTotal : null,
+  }
+}
+
+export const fetchOfficialPl3Archive = async (
+  limit: number,
+  fetchImpl: typeof fetch = fetch,
+  provider: OfficialSyncProvider = 'auto',
+): Promise<FetchOfficialPl3ArchiveResult> => {
+  const normalizedLimit = normalizeArchiveLimit(limit)
+  const rawResponses: OfficialRawResponse[] = []
+  let primaryError: unknown
+
+  const normalizeArchiveRecords = (records: readonly Pl3SourceRecord[]) => {
+    const normalized = validateSyncRecords(records).reverse()
+    const warnings = normalized.length === records.length
+      ? []
+      : [`来源返回 ${records.length} 条记录，按期号规范化后为 ${normalized.length} 条，存在 ${records.length - normalized.length} 条重复或被合并记录。`]
+    return { normalized, warnings }
+  }
+
+  if (provider === 'zhcw') {
+    const result = await fetchZhcwRecords(normalizedLimit, fetchImpl, (response) => rawResponses.push(response))
+    if (result.records.length === 0) throw new Error('中彩网没有返回可用记录')
+    const normalized = normalizeArchiveRecords(result.records)
+    return {
+      records: normalized.normalized,
+      provider: 'zhcw',
+      sourceUrl: OFFICIAL_PL3.fallbackSourceUrl,
+      authoritativeTotal: result.authoritativeTotal,
+      rawResponses,
+      warnings: normalized.warnings,
+    }
+  }
+
+  try {
+    const result = await fetchSportteryRecords(normalizedLimit, fetchImpl, (response) => rawResponses.push(response))
+    if (result.records.length === 0) throw new Error('中国体彩网没有返回可用记录')
+    const normalized = normalizeArchiveRecords(result.records)
+    return {
+      records: normalized.normalized,
+      provider: 'lottery-gov-cn',
+      sourceUrl: OFFICIAL_PL3.sourceUrl,
+      authoritativeTotal: result.authoritativeTotal,
+      rawResponses,
+      warnings: normalized.warnings,
+    }
+  } catch (error) {
+    primaryError = error
+    if (provider === 'lottery-gov-cn') {
+      throw new Error(`中国体彩网排列3数据不可用: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  try {
+    const result = await fetchZhcwRecords(normalizedLimit, fetchImpl, (response) => rawResponses.push(response))
+    if (result.records.length === 0) throw new Error('中彩网没有返回可用记录')
+    const normalized = normalizeArchiveRecords(result.records)
+    return {
+      records: normalized.normalized,
+      provider: 'zhcw',
+      sourceUrl: OFFICIAL_PL3.fallbackSourceUrl,
+      authoritativeTotal: result.authoritativeTotal,
+      rawResponses,
+      warnings: [
+        `中国体彩网整批同步失败，已切换中彩网: ${primaryError instanceof Error ? primaryError.message : String(primaryError)}`,
+        ...normalized.warnings,
+      ],
+    }
+  } catch (fallbackError) {
+    throw new Error(
+      `排列3公开数据源均不可用。体彩网: ${primaryError instanceof Error ? primaryError.message : String(primaryError)}；` +
+      `中彩网: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+    )
+  }
 }
 
 export const fetchOfficialPl3Records = async (
@@ -211,24 +379,526 @@ export const fetchOfficialPl3Records = async (
   fetchImpl: typeof fetch = fetch,
 ) => {
   const normalizedLimit = normalizeLimit(limit)
-  let primaryError: unknown
+  return (await fetchOfficialPl3Archive(normalizedLimit, fetchImpl)).records
+}
+
+const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex')
+
+const writeBufferAtomically = async (outputPath: string, content: Buffer | string) => {
+  await mkdir(path.dirname(outputPath), { recursive: true })
+  const temporaryPath = `${outputPath}.${process.pid}.${Date.now()}.tmp`
+  await writeFile(temporaryPath, content)
   try {
-    const records = await fetchSportteryRecords(normalizedLimit, fetchImpl)
-    if (records.length === 0) throw new Error('中国体彩网没有返回可用记录')
-    return validateSyncRecords(records).reverse()
-  } catch (error) {
-    primaryError = error
+    await rename(temporaryPath, outputPath)
+  } catch (error: any) {
+    if (error?.code === 'EEXIST' && existsSync(outputPath)) {
+      await import('node:fs/promises').then(({ unlink }) => unlink(temporaryPath).catch(() => undefined))
+      return
+    }
+    throw error
+  }
+}
+
+const persistRawResponses = async (
+  dataDir: string,
+  responses: readonly OfficialRawResponse[],
+) => {
+  const rawEntries: Array<{
+    provider: string
+    page: number
+    url: string
+    statusCode: number
+    fetchedAt: string
+    contentHash: string
+    rawPath: string
+  }> = []
+
+  for (const response of responses) {
+    const contentHash = sha256(response.rawText)
+    const year = response.fetchedAt.slice(0, 4)
+    const relativePath = path.join('raw', response.provider, year, `${contentHash}.json.gz`)
+    const outputPath = path.join(dataDir, relativePath)
+    if (!existsSync(outputPath)) await writeBufferAtomically(outputPath, gzipSync(Buffer.from(response.rawText, 'utf8')))
+    rawEntries.push({
+      provider: response.provider,
+      page: response.page,
+      url: response.url,
+      statusCode: response.statusCode,
+      fetchedAt: response.fetchedAt,
+      contentHash,
+      rawPath: relativePath.replaceAll('\\', '/'),
+    })
   }
 
+  const aggregateHash = sha256(JSON.stringify(rawEntries.map((item) => item.contentHash)))
+  const manifestRelativePath = path.join('raw', 'manifests', `${aggregateHash}.json`)
+  const manifestPath = path.join(dataDir, manifestRelativePath)
+  await writeJsonAtomically(manifestPath, {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    aggregateHash,
+    responses: rawEntries,
+  })
+  return {
+    aggregateHash,
+    manifestPath,
+    manifestRelativePath: manifestRelativePath.replaceAll('\\', '/'),
+  }
+}
+
+type CheckpointPage = Pl3ArchivePageInput & {
+  fingerprint: string | null
+  statusText: string
+  contentType: string | null
+}
+
+type SyncCheckpoint = {
+  schemaVersion: 1
+  requestHash: string
+  provider: 'lottery-gov-cn' | 'zhcw'
+  sourceUrl: string
+  apiUrl: string
+  limit: number
+  pageSize: number
+  nextPage: number
+  authoritativeTotal: number | null
+  pages: CheckpointPage[]
+  fingerprints: string[]
+  startedAt: string
+  updatedAt: string
+}
+
+type CheckpointArchiveResult = {
+  records: Pl3DrawRecord[]
+  provider: 'lottery-gov-cn' | 'zhcw'
+  sourceUrl: string
+  authoritativeTotal: number | null
+  pages: CheckpointPage[]
+  checkpointPath: string
+  resumedPageCount: number
+  warnings: string[]
+}
+
+class CheckpointArchiveError extends Error {
+  readonly pages: CheckpointPage[]
+  readonly checkpointPath: string
+
+  constructor(message: string, pages: CheckpointPage[], checkpointPath: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause })
+    this.name = 'CheckpointArchiveError'
+    this.pages = pages
+    this.checkpointPath = checkpointPath
+  }
+}
+
+const checkpointMaxAgeMs = 7 * 24 * 60 * 60 * 1000
+
+const getProviderConfig = (provider: 'lottery-gov-cn' | 'zhcw') => provider === 'lottery-gov-cn'
+  ? {
+      sourceUrl: OFFICIAL_PL3.sourceUrl,
+      apiUrl: process.env.LOTTERYMCP_SPORTTERY_API_URL ||
+        'https://webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry',
+      referer: OFFICIAL_PL3.referer,
+    }
+  : {
+      sourceUrl: OFFICIAL_PL3.fallbackSourceUrl,
+      apiUrl: process.env.LOTTERYMCP_ZHCW_API_URL || 'https://jc.zhcw.com/port/client_json.php',
+      referer: OFFICIAL_PL3.fallbackSourceUrl,
+    }
+
+const buildProviderPageUrl = (
+  provider: 'lottery-gov-cn' | 'zhcw',
+  apiUrl: string,
+  page: number,
+  pageSize: number,
+  limit: number,
+) => {
+  const url = new URL(apiUrl)
+  url.search = provider === 'lottery-gov-cn'
+    ? new URLSearchParams({
+        gameNo: OFFICIAL_PL3.gameNo,
+        provinceId: '0',
+        pageSize: String(pageSize),
+        isVerify: '1',
+        pageNo: String(page),
+      }).toString()
+    : new URLSearchParams({
+        transactionType: '10001001',
+        lotteryId: OFFICIAL_PL3.fallbackLotteryId,
+        issueCount: String(limit),
+        startIssue: '',
+        endIssue: '',
+        startDate: '',
+        endDate: '',
+        type: '0',
+        pageNum: String(page),
+        pageSize: String(pageSize),
+        callback: 'callback',
+      }).toString()
+  return url
+}
+
+const persistCheckpointRawResponse = async (dataDir: string, response: OfficialRawResponse) => {
+  const contentHash = sha256(response.rawText)
+  const relativePath = path.join(
+    'raw',
+    response.provider,
+    response.fetchedAt.slice(0, 4),
+    `${contentHash}.json.gz`,
+  ).replaceAll('\\', '/')
+  const outputPath = path.join(dataDir, relativePath)
+  if (!existsSync(outputPath)) {
+    await writeBufferAtomically(outputPath, gzipSync(Buffer.from(response.rawText, 'utf8')))
+  }
+  return { contentHash, relativePath }
+}
+
+const archiveCheckpoint = async (checkpointPath: string, reason: string) => {
+  if (!existsSync(checkpointPath)) return
+  const archivedPath = `${checkpointPath}.${reason}-${new Date().toISOString().replace(/[:.]/g, '-')}`
+  await rename(checkpointPath, archivedPath)
+}
+
+const loadCheckpoint = async (
+  checkpointPath: string,
+  expected: Pick<SyncCheckpoint, 'requestHash' | 'provider' | 'sourceUrl' | 'apiUrl' | 'limit' | 'pageSize'>,
+) => {
+  if (!existsSync(checkpointPath)) return null
   try {
-    const records = await fetchZhcwRecords(normalizedLimit, fetchImpl)
-    if (records.length === 0) throw new Error('中彩网没有返回可用记录')
-    return validateSyncRecords(records).reverse()
-  } catch (fallbackError) {
-    throw new Error(
-      `排列3公开数据源均不可用。体彩网: ${primaryError instanceof Error ? primaryError.message : String(primaryError)}；` +
-      `中彩网: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+    const checkpoint = JSON.parse(await readFile(checkpointPath, 'utf8')) as SyncCheckpoint
+    const updatedAt = new Date(checkpoint.updatedAt).getTime()
+    const matches = checkpoint.schemaVersion === 1 &&
+      checkpoint.requestHash === expected.requestHash &&
+      checkpoint.provider === expected.provider &&
+      checkpoint.sourceUrl === expected.sourceUrl &&
+      checkpoint.apiUrl === expected.apiUrl &&
+      checkpoint.limit === expected.limit &&
+      checkpoint.pageSize === expected.pageSize &&
+      Number.isFinite(updatedAt) &&
+      Date.now() - updatedAt <= checkpointMaxAgeMs &&
+      Array.isArray(checkpoint.pages) &&
+      Array.isArray(checkpoint.fingerprints)
+    if (!matches) {
+      await archiveCheckpoint(checkpointPath, 'stale')
+      return null
+    }
+    for (const page of checkpoint.pages) {
+      if (page.parseStatus === 'parsed') validateSyncRecords(page.records)
+    }
+    return checkpoint
+  } catch {
+    await archiveCheckpoint(checkpointPath, 'invalid')
+    return null
+  }
+}
+
+const saveCheckpoint = async (checkpointPath: string, checkpoint: SyncCheckpoint) => {
+  checkpoint.updatedAt = new Date().toISOString()
+  await writeJsonAtomically(checkpointPath, checkpoint)
+}
+
+const fetchProviderArchiveWithCheckpoint = async (input: {
+  dataDir: string
+  provider: 'lottery-gov-cn' | 'zhcw'
+  limit: number
+  fetchImpl: typeof fetch
+  resume: boolean
+  restart: boolean
+}): Promise<CheckpointArchiveResult> => {
+  const config = getProviderConfig(input.provider)
+  const requestHash = sha256(JSON.stringify({
+    provider: input.provider,
+    sourceUrl: config.sourceUrl,
+    apiUrl: config.apiUrl,
+    limit: input.limit,
+    pageSize: PAGE_SIZE,
+  }))
+  const checkpointPath = path.join(
+    input.dataDir,
+    'raw',
+    'checkpoints',
+    `${input.provider}-${requestHash}.json`,
+  )
+  if (input.restart) await unlink(checkpointPath).catch(() => undefined)
+  const resumed = input.resume && !input.restart
+    ? await loadCheckpoint(checkpointPath, {
+        requestHash,
+        provider: input.provider,
+        sourceUrl: config.sourceUrl,
+        apiUrl: config.apiUrl,
+        limit: input.limit,
+        pageSize: PAGE_SIZE,
+      })
+    : null
+  const checkpoint: SyncCheckpoint = resumed || {
+    schemaVersion: 1,
+    requestHash,
+    provider: input.provider,
+    sourceUrl: config.sourceUrl,
+    apiUrl: config.apiUrl,
+    limit: input.limit,
+    pageSize: PAGE_SIZE,
+    nextPage: 1,
+    authoritativeTotal: null,
+    pages: [],
+    fingerprints: [],
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }
+  const resumedPageCount = checkpoint.pages.filter((page) => page.parseStatus === 'parsed').length
+  const fingerprints = new Set(checkpoint.fingerprints)
+  let acceptedCount = checkpoint.pages
+    .filter((page) => page.parseStatus === 'parsed')
+    .reduce((total, page) => total + page.records.length, 0)
+
+  try {
+    while (acceptedCount < input.limit) {
+      const pageNumber = checkpoint.nextPage
+      const url = buildProviderPageUrl(input.provider, config.apiUrl, pageNumber, PAGE_SIZE, input.limit)
+      let rawResponse: OfficialRawResponse | undefined
+      let payload: any
+      try {
+        payload = await fetchPayload(
+          url,
+          config.referer,
+          input.fetchImpl,
+          { provider: input.provider, page: pageNumber },
+          (response) => { rawResponse = response },
+        )
+      } catch (error) {
+        if (rawResponse) {
+          const raw = await persistCheckpointRawResponse(input.dataDir, rawResponse)
+          checkpoint.pages.push({
+            provider: input.provider,
+            page: pageNumber,
+            sourceUrl: config.sourceUrl,
+            fetchedAt: rawResponse.fetchedAt,
+            statusCode: rawResponse.statusCode,
+            contentHash: raw.contentHash,
+            rawPath: raw.relativePath,
+            parseStatus: 'failed',
+            records: [],
+            metadata: { requestUrl: rawResponse.url, error: error instanceof Error ? error.message : String(error) },
+            fingerprint: null,
+            statusText: rawResponse.statusText,
+            contentType: rawResponse.contentType,
+          })
+          await saveCheckpoint(checkpointPath, checkpoint)
+        }
+        throw error
+      }
+
+      const raw = await persistCheckpointRawResponse(input.dataDir, rawResponse!)
+      let pageRecords: Pl3DrawRecord[]
+      let fingerprint: string
+      try {
+        const pageSourceRecords = input.provider === 'lottery-gov-cn'
+          ? normalizeSportteryRows(payload)
+          : normalizeZhcwRows(payload)
+        pageRecords = validateSyncRecords(pageSourceRecords)
+        fingerprint = pageRecords.map((record) => record.period).join('|')
+        if (pageRecords.length > 0 && fingerprints.has(fingerprint)) {
+          throw new Error(`公开数据源在第 ${pageNumber} 页返回了重复页面`)
+        }
+      } catch (error) {
+        checkpoint.pages.push({
+          provider: input.provider,
+          page: pageNumber,
+          sourceUrl: config.sourceUrl,
+          fetchedAt: rawResponse!.fetchedAt,
+          statusCode: rawResponse!.statusCode,
+          contentHash: raw.contentHash,
+          rawPath: raw.relativePath,
+          parseStatus: 'failed',
+          records: [],
+          metadata: { requestUrl: rawResponse!.url, error: error instanceof Error ? error.message : String(error) },
+          fingerprint: null,
+          statusText: rawResponse!.statusText,
+          contentType: rawResponse!.contentType,
+        })
+        await saveCheckpoint(checkpointPath, checkpoint)
+        throw error
+      }
+      const remaining = input.limit - acceptedCount
+      const acceptedRecords = pageRecords.slice(0, remaining)
+      checkpoint.pages.push({
+        provider: input.provider,
+        page: pageNumber,
+        sourceUrl: config.sourceUrl,
+        fetchedAt: rawResponse!.fetchedAt,
+        statusCode: rawResponse!.statusCode,
+        contentHash: raw.contentHash,
+        rawPath: raw.relativePath,
+        parseStatus: 'parsed',
+        records: acceptedRecords,
+        metadata: { requestUrl: rawResponse!.url, contentType: rawResponse!.contentType },
+        fingerprint,
+        statusText: rawResponse!.statusText,
+        contentType: rawResponse!.contentType,
+      })
+      if (fingerprint) {
+        fingerprints.add(fingerprint)
+        checkpoint.fingerprints.push(fingerprint)
+      }
+      const reportedTotal = Number(input.provider === 'lottery-gov-cn' ? payload?.value?.total : payload?.total)
+      if (Number.isInteger(reportedTotal) && reportedTotal > 0) {
+        checkpoint.authoritativeTotal = input.provider === 'lottery-gov-cn' || reportedTotal < input.limit
+          ? reportedTotal
+          : null
+      }
+      acceptedCount += acceptedRecords.length
+      checkpoint.nextPage = pageNumber + 1
+      await saveCheckpoint(checkpointPath, checkpoint)
+      if (pageRecords.length === 0 || pageRecords.length < PAGE_SIZE) break
+      if (acceptedCount < input.limit && input.fetchImpl === fetch) await delay(PAGE_DELAY_MS)
+    }
+
+    const sourceRecords = checkpoint.pages
+      .filter((page) => page.parseStatus === 'parsed')
+      .flatMap((page) => page.records)
+    if (sourceRecords.length === 0) throw new Error(`${config.sourceUrl} 没有返回可用记录`)
+    const normalizedRecords = validateSyncRecords(sourceRecords).reverse()
+    const warnings = normalizedRecords.length === sourceRecords.length
+      ? []
+      : [`来源返回 ${sourceRecords.length} 条记录，按期号规范化后为 ${normalizedRecords.length} 条。`]
+    return {
+      records: normalizedRecords,
+      provider: input.provider,
+      sourceUrl: config.sourceUrl,
+      authoritativeTotal: checkpoint.authoritativeTotal,
+      pages: checkpoint.pages,
+      checkpointPath,
+      resumedPageCount,
+      warnings,
+    }
+  } catch (error) {
+    throw new CheckpointArchiveError(
+      `${input.provider} 同步失败: ${error instanceof Error ? error.message : String(error)}`,
+      checkpoint.pages,
+      checkpointPath,
+      error,
     )
+  }
+}
+
+const persistCheckpointManifest = async (dataDir: string, pages: readonly CheckpointPage[]) => {
+  const entries = pages.map((page) => ({
+    provider: page.provider,
+    page: page.page,
+    sourceUrl: page.sourceUrl,
+    fetchedAt: page.fetchedAt,
+    statusCode: page.statusCode,
+    parseStatus: page.parseStatus,
+    contentHash: page.contentHash,
+    rawPath: page.rawPath,
+  }))
+  const aggregateHash = sha256(JSON.stringify(entries.map((item) => item.contentHash)))
+  const relativePath = path.join('raw', 'manifests', `${aggregateHash}.json`).replaceAll('\\', '/')
+  const manifestPath = path.join(dataDir, relativePath)
+  await writeJsonAtomically(manifestPath, {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    aggregateHash,
+    responses: entries,
+  })
+  return { aggregateHash, manifestPath, relativePath }
+}
+
+export const syncOfficialPl3ToStore = async (
+  options: SyncOfficialPl3StoreOptions,
+): Promise<SyncOfficialPl3StoreResult> => {
+  const resolvedDataDir = path.resolve(options.dataDir || DEFAULT_DATA_DIR)
+  const requestedLimit = options.full ? MAX_ARCHIVE_LIMIT : normalizeArchiveLimit(options.limit)
+  const fetchImpl = options.fetchImpl || fetch
+  const requestedProvider = options.provider || 'auto'
+  const resume = options.resume !== false
+  const restart = Boolean(options.restart)
+  let archive: CheckpointArchiveResult
+  const discardedPages: CheckpointPage[] = []
+  let primaryWarning: string | undefined
+
+  if (requestedProvider === 'auto') {
+    try {
+      archive = await fetchProviderArchiveWithCheckpoint({
+        dataDir: resolvedDataDir,
+        provider: 'lottery-gov-cn',
+        limit: requestedLimit,
+        fetchImpl,
+        resume,
+        restart,
+      })
+    } catch (error) {
+      if (error instanceof CheckpointArchiveError) discardedPages.push(...error.pages)
+      primaryWarning = `中国体彩网整批同步失败，已切换中彩网: ${error instanceof Error ? error.message : String(error)}`
+      archive = await fetchProviderArchiveWithCheckpoint({
+        dataDir: resolvedDataDir,
+        provider: 'zhcw',
+        limit: requestedLimit,
+        fetchImpl,
+        resume,
+        restart,
+      })
+    }
+  } else {
+    archive = await fetchProviderArchiveWithCheckpoint({
+      dataDir: resolvedDataDir,
+      provider: requestedProvider,
+      limit: requestedLimit,
+      fetchImpl,
+      resume,
+      restart,
+    })
+  }
+
+  const raw = await persistCheckpointManifest(resolvedDataDir, archive.pages)
+  const store = openPl3Store({ dataDir: resolvedDataDir })
+
+  try {
+    if (discardedPages.length > 0) store.recordArchivePages(discardedPages)
+    const imported = store.importArchivePages(archive.pages, {
+      authoritativeTotal: archive.authoritativeTotal || undefined,
+    })
+    const status = store.getStatus()
+    const records = store.getRecords({ page: 1, limit: Math.max(status.usableRecords, 1) }).map<Pl3DrawRecord>((record) => ({
+      lotteryType: record.lotteryType,
+      period: record.period,
+      drawDate: record.drawDate,
+      numbers: record.numbers,
+      numbersList: record.numbersList,
+      source: 'official',
+      sourceUrl: record.sourceUrl,
+      rawProvider: record.provider,
+    }))
+    const settlement = await settlePl3Predictions(path.join(resolvedDataDir, 'pl3-predictions.json'), records)
+    const warnings = [...(primaryWarning ? [primaryWarning] : []), ...archive.warnings]
+    if (archive.records.length < requestedLimit && archive.authoritativeTotal === null) {
+      warnings.push(`请求最多 ${requestedLimit} 期，来源返回 ${archive.records.length} 期，权威完整率仍为 unknown。`)
+    }
+    try {
+      await unlink(archive.checkpointPath)
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') warnings.push(`同步成功，但无法删除 checkpoint: ${archive.checkpointPath}`)
+    }
+    return {
+      lotteryType: 'pl3',
+      records,
+      outputPath: store.databasePath,
+      databasePath: store.databasePath,
+      sourceUrl: archive.sourceUrl,
+      provider: archive.provider,
+      authoritativeTotal: archive.authoritativeTotal,
+      warnings,
+      settledCount: settlement.settledCount,
+      rawResponseCount: archive.pages.length,
+      rawManifestPath: raw.manifestPath,
+      confirmedRecords: imported.confirmedRecords,
+      singleSourceRecords: imported.singleSourceRecords,
+      conflictRecords: imported.conflictRecords,
+      checkpointPath: archive.checkpointPath,
+      resumedPageCount: archive.resumedPageCount,
+    }
+  } finally {
+    store.close()
   }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "lotterymcp",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "private": false,
   "type": "module",
   "description": "Lotterymcp shortcut command for P3 history, prediction, and MCP access",
@@ -13,7 +13,7 @@
     "README.md"
   ],
   "dependencies": {
-    "neuxnbcp": "^0.3.0"
+    "neuxnbcp": "^0.5.0"
   },
   "engines": {
     "node": ">=20"

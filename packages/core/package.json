@@ -1,9 +1,9 @@
 {
   "name": "lotterymcp-core",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "private": false,
   "type": "module",
-  "description": "Core P3 data providers, deterministic prediction, and walk-forward backtesting",
+  "description": "Core P3 data archive, As-of features, reproducible experiments, prediction, and backtesting",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -34,5 +34,11 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
   }
 }

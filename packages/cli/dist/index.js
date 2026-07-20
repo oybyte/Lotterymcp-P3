@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { McpApiError, createLotteryMcpClient, createPl3PredictionService, formatMcpApiError, normalizePl3Records, writeJsonAtomically, } from 'lotterymcp-core';
+import { McpApiError, applyLegacyPl3Migration, applyPl3SchemaMigration, backupPl3Database, createLotteryMcpClient, createPl3Experiment, createPl3PredictionService, evaluatePl3ExperimentFrozen, formatMcpApiError, generatePl3ExperimentReport, hasPl3Database, normalizePl3Records, openPl3Store, previewLegacyPl3Migration, previewPl3SchemaMigration, inspectPl3Experiment, PL3_DATABASE_LATEST_SCHEMA_VERSION, resolvePl3DatabasePath, restorePl3Database, runPl3Experiment, writeJsonAtomically, } from 'lotterymcp-core';
 import { MCP_SERVER_TOOLS, MCP_SERVER_TRANSPORT, startLotteryMcpStdioServer } from 'lotterymcp-server';
 import { DEFAULT_API_BASE_URL, DEFAULT_PERIODS, getConfigPath, maskToken, renderMcpConfigSnippet, resolveConfig, saveLocalConfig, validateConfig, } from './config.js';
 import { renderNbcpBanner, shouldShowBanner } from './banner.js';
-import { syncOfficialFile, syncOfficialPl3 } from './official-sync.js';
+import { exportPl3Store, importPl3FileToStore } from './data-files.js';
+import { applyPl3RawGcPlan, createPl3RawGcPlan } from './data-gc.js';
+import { syncOfficialFile, syncOfficialPl3, syncOfficialPl3ToStore } from './official-sync.js';
 const WEBSITE_URL = 'https://www.neuxsbot.com';
 const MEMBER_CENTER_URL = 'https://www.neuxsbot.com/member';
 const TOKEN_PAGE_URL = 'https://www.neuxsbot.com/member/api-keys';
@@ -40,6 +44,8 @@ const HELP_TEXT = `临时打开菜单:
   predict          生成排列3候选与 walk-forward 回测
   analyze          predict 的兼容别名
   sync             同步官方公开开奖数据到本地缓存
+  data             管理 SQLite 数据档案、迁移和冲突
+  experiment       注册和运行可复现实验
 
 说明:
   predict/analyze 共用内置 TypeScript P3 预测核心。
@@ -83,6 +89,18 @@ const renderInitUsage = () => `用法:
 `;
 const renderDoctorUsage = () => `用法:
   lotterymcp doctor
+`;
+const renderExperimentUsage = () => `用法:
+  lotterymcp experiment create spec.json [--json]
+  lotterymcp experiment list [--json]
+  lotterymcp experiment inspect EXPERIMENT_ID [--json]
+  lotterymcp experiment run EXPERIMENT_ID [--json]
+  lotterymcp experiment resume EXPERIMENT_ID [--json]
+  lotterymcp experiment report EXPERIMENT_ID [--json]
+  lotterymcp experiment evaluate EXPERIMENT_ID --frozen --confirm [--json]
+
+说明:
+  实验只读取 immutable dataset snapshot；冻结区只能显式确认后评估一次。
 `;
 const isPositiveInteger = (value) => /^\d+$/.test(value.trim());
 const buildNextConfig = (currentConfig, input) => ({
@@ -231,9 +249,35 @@ const promptForConfig = async (argv = []) => {
 };
 const canShowInteractiveMenu = (stdin = process.stdin, stdout = process.stdout) => process.env.NBCP_FORCE_MENU === '1' || (Boolean(stdin.isTTY) && Boolean(stdout.isTTY));
 const hasOfficialCache = (dataDir) => {
-    return existsSync(path.join(dataDir, 'pl3.json'));
+    return hasPl3Database(dataDir) || existsSync(path.join(dataDir, 'pl3.json'));
 };
 const getOfficialCacheSummary = (dataDir) => {
+    if (hasPl3Database(dataDir)) {
+        const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true });
+        try {
+            const status = store.getStatus();
+            return {
+                exists: true,
+                valid: true,
+                cachePath: status.databasePath,
+                recordCount: status.usableRecords,
+                latestPeriod: status.latestPeriod,
+                generatedAt: null,
+                database: status,
+            };
+        }
+        catch (error) {
+            return {
+                exists: true,
+                valid: false,
+                cachePath: resolvePl3DatabasePath(dataDir),
+                error: error instanceof Error ? error.message : String(error),
+            };
+        }
+        finally {
+            store.close();
+        }
+    }
     const cachePath = path.join(dataDir, 'pl3.json');
     if (!existsSync(cachePath))
         return { exists: false, cachePath };
@@ -267,7 +311,7 @@ const validateOfficialCache = (config) => {
     if (hasOfficialCache(dataDir)) {
         return true;
     }
-    console.error(`未找到排列3官方数据缓存，请先运行 lotterymcp sync --source official。数据目录: ${dataDir}`);
+    console.error(`未找到排列3数据档案，请先运行 lotterymcp sync --source official，已有 JSON 时可运行 lotterymcp data migrate --dry-run。数据目录: ${dataDir}`);
     return false;
 };
 const printConfigSnippet = async () => {
@@ -327,13 +371,41 @@ const runDoctor = async (argv = []) => {
         });
         const ledger = await predictionService.getLedgerSummary();
         console.log(`预测账本: 总计 ${ledger.total}，待结算 ${ledger.pending}，已结算 ${ledger.settled}`);
+        const dataDir = String(config.dataDir || '.lotterymcp-data');
+        if (hasPl3Database(dataDir)) {
+            const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true });
+            try {
+                const schemaVersion = store.getSchemaVersion();
+                const snapshots = store.listDatasetSnapshots({ limit: 100 });
+                console.log(`研究数据库: schema ${schemaVersion}/${PL3_DATABASE_LATEST_SCHEMA_VERSION}，snapshot ${snapshots.length}`);
+                if (schemaVersion < PL3_DATABASE_LATEST_SCHEMA_VERSION) {
+                    console.log('实验基础设施: 待迁移，请先运行 lotterymcp data migrate --dry-run');
+                }
+                else {
+                    const experiments = store.listExperiments({ limit: 100 });
+                    const statusCounts = experiments.reduce((counts, experiment) => {
+                        counts[experiment.status] = (counts[experiment.status] || 0) + 1;
+                        return counts;
+                    }, {});
+                    const activeLocks = store.listRuntimeLocks().filter((lock) => Date.parse(String(lock.expires_at)) > Date.now());
+                    console.log(`实验: ${experiments.length}，状态 ${JSON.stringify(statusCounts)}，活动锁 ${activeLocks.length}`);
+                }
+            }
+            finally {
+                store.close();
+            }
+        }
         if (config.dataMode === 'official') {
-            const cache = getOfficialCacheSummary(String(config.dataDir || '.lotterymcp-data'));
+            const cache = getOfficialCacheSummary(dataDir);
             if (!cache.valid) {
                 console.error(`排列3缓存无效: ${cache.error || cache.cachePath}`);
                 return 1;
             }
             console.log(`排列3缓存: ${cache.recordCount} 期，最新 ${cache.latestPeriod || '未知'}，更新 ${cache.generatedAt || '未知'}`);
+            if ('database' in cache && cache.database) {
+                console.log(`SQLite: schema ${cache.database.schemaVersion}，确认 ${cache.database.confirmedRecords}，单来源 ${cache.database.singleSourceRecords}，冲突 ${cache.database.conflictRecords}`);
+                console.log(`完整率: ${cache.database.completenessStatus === 'known' && cache.database.authoritativeCompleteness !== null ? `${(cache.database.authoritativeCompleteness * 100).toFixed(2)}%` : 'unknown'}`);
+            }
         }
         return 0;
     }
@@ -626,6 +698,586 @@ const runSyncCommand = async (argv) => {
     console.log('  lotterymcp predict --periods 200 --tickets 10 --play mixed');
     return 0;
 };
+const renderDataUsage = () => `用法:
+  lotterymcp data status [--json]
+  lotterymcp data sync [--limit 500]
+  lotterymcp data sync --full [--provider auto|lottery-gov-cn|zhcw] [--reconcile] [--resume|--restart]
+  lotterymcp data import --file FILE [--format json|csv]
+  lotterymcp data export --output FILE [--format json|csv]
+  lotterymcp data migrate --dry-run
+  lotterymcp data migrate --apply
+  lotterymcp data conflicts [--from-period P] [--to-period P] [--type date|numbers|both] [--json]
+  lotterymcp data resolve --period PERIOD --observation-id ID --reason TEXT --evidence-url URL
+  lotterymcp data snapshot create [--last 2000 | --from-period P --after-period P] [--allow-single-source]
+  lotterymcp data snapshot list
+  lotterymcp data snapshot inspect SNAPSHOT_ID
+  lotterymcp data snapshot verify SNAPSHOT_ID
+  lotterymcp data backup
+  lotterymcp data restore --backup FILE
+  lotterymcp data gc --dry-run|--apply
+
+说明:
+  migrate 使用旁路数据库验证后原子切换，不删除原 pl3.json 和预测账本。
+  doctor 和 serve 不会隐式执行数据迁移。
+`;
+const getArgumentValue = (argv, name) => {
+    const index = argv.indexOf(name);
+    return index >= 0 ? argv[index + 1] : undefined;
+};
+const printDataValue = (value, asJson) => {
+    if (asJson)
+        console.log(JSON.stringify(value, null, 2));
+    else
+        console.log(value);
+};
+const runDataStatus = async (dataDir, asJson) => {
+    if (!hasPl3Database(dataDir)) {
+        const preview = await previewLegacyPl3Migration(dataDir);
+        if (asJson) {
+            console.log(JSON.stringify({ storage: 'legacy-json', migrationRequired: preview.historyExists, ...preview }, null, 2));
+        }
+        else {
+            console.log('排列3数据存储: legacy-json');
+            console.log(`  历史缓存: ${preview.historyExists ? preview.historyPath : '未找到'}`);
+            console.log(`  有效记录: ${preview.recordCount}`);
+            console.log(`  最新期号: ${preview.latestPeriod || '未知'}`);
+            console.log(`  旧预测数: ${preview.predictionCount}`);
+            if (preview.historyExists)
+                console.log('  迁移状态: 待执行 data migrate --dry-run');
+        }
+        return 0;
+    }
+    const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true });
+    try {
+        const status = store.getStatus();
+        if (asJson)
+            console.log(JSON.stringify({ storage: 'sqlite', ...status }, null, 2));
+        else {
+            console.log('排列3数据存储: sqlite');
+            console.log(`  数据库: ${status.databasePath}`);
+            console.log(`  Schema: ${status.schemaVersion}`);
+            console.log(`  可用记录: ${status.usableRecords}`);
+            console.log(`  确认/单来源/冲突: ${status.confirmedRecords}/${status.singleSourceRecords}/${status.conflictRecords}`);
+            console.log(`  最新期号: ${status.latestPeriod || '未知'}`);
+            console.log(`  权威完整率: ${status.authoritativeCompleteness === null ? 'unknown' : `${(status.authoritativeCompleteness * 100).toFixed(2)}%`}`);
+            console.log(`  来源核对覆盖率: ${status.reconciliationCoverage === null ? 'unknown' : `${(status.reconciliationCoverage * 100).toFixed(2)}%`}`);
+            console.log(`  双官方来源覆盖率: ${status.dualSourceCoverage === null ? 'unknown' : `${(status.dualSourceCoverage * 100).toFixed(2)}%`}`);
+            console.log(`  已保全旧预测: ${status.legacyPredictionCount}`);
+        }
+        return 0;
+    }
+    finally {
+        store.close();
+    }
+};
+const runDataCommand = async (argv) => {
+    if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
+        console.log(renderDataUsage());
+        return 0;
+    }
+    const action = argv[0];
+    const config = await resolveConfig();
+    const dataDir = path.resolve(String(config.dataDir || '.lotterymcp-data'));
+    const asJson = argv.includes('--json');
+    try {
+        if (action === 'status')
+            return runDataStatus(dataDir, asJson);
+        if (action === 'sync') {
+            if (!hasPl3Database(dataDir) && existsSync(path.join(dataDir, 'pl3.json'))) {
+                throw new Error('检测到旧 pl3.json，请先执行 data migrate --dry-run 和 data migrate --apply。');
+            }
+            const full = argv.includes('--full');
+            const limit = Number(getArgumentValue(argv, '--limit') || (full ? '10000' : '500'));
+            const provider = String(getArgumentValue(argv, '--provider') || 'auto');
+            if (!['auto', 'lottery-gov-cn', 'zhcw'].includes(provider)) {
+                throw new Error('data sync 的 --provider 只支持 auto、lottery-gov-cn 或 zhcw。');
+            }
+            if (!Number.isInteger(limit) || limit < 1 || limit > 10000) {
+                throw new Error('data sync 的 --limit 必须是 1-10000 的整数。');
+            }
+            if (argv.includes('--resume') && argv.includes('--restart')) {
+                throw new Error('data sync 的 --resume 和 --restart 不能同时使用。');
+            }
+            const restart = argv.includes('--restart');
+            if (!asJson)
+                console.log(full ? '正在全量同步排列3公开历史数据...' : '正在增量同步排列3公开历史数据...');
+            const result = await syncOfficialPl3ToStore({
+                dataDir,
+                limit,
+                full,
+                provider: provider,
+                resume: !restart,
+                restart,
+            });
+            const results = [result];
+            if (argv.includes('--reconcile') && result.provider !== 'zhcw') {
+                if (!asJson)
+                    console.log('正在同步中彩网进行独立来源核对...');
+                results.push(await syncOfficialPl3ToStore({
+                    dataDir,
+                    limit,
+                    full,
+                    provider: 'zhcw',
+                    resume: !restart,
+                    restart,
+                }));
+            }
+            const finalResult = results.at(-1);
+            if (asJson)
+                console.log(JSON.stringify({
+                    syncs: results.map((item) => ({
+                        databasePath: item.databasePath,
+                        provider: item.provider,
+                        sourceUrl: item.sourceUrl,
+                        importedRecordCount: item.records.length,
+                        authoritativeTotal: item.authoritativeTotal,
+                        rawResponseCount: item.rawResponseCount,
+                        rawManifestPath: item.rawManifestPath,
+                        checkpointPath: item.checkpointPath,
+                        resumedPageCount: item.resumedPageCount,
+                        warnings: item.warnings,
+                    })),
+                    final: {
+                        databasePath: finalResult.databasePath,
+                        records: finalResult.records.length,
+                        confirmedRecords: finalResult.confirmedRecords,
+                        singleSourceRecords: finalResult.singleSourceRecords,
+                        conflictRecords: finalResult.conflictRecords,
+                    },
+                }, null, 2));
+            else {
+                console.log(`同步完成: ${finalResult.databasePath}`);
+                results.forEach((item) => {
+                    console.log(`  来源: ${item.provider} (${item.sourceUrl})`);
+                    console.log(`    原始响应: ${item.rawResponseCount} 页`);
+                    console.log(`    Raw manifest: ${item.rawManifestPath}`);
+                    if (item.resumedPageCount > 0)
+                        console.log(`    已恢复页面: ${item.resumedPageCount}`);
+                    console.log(`    来源声明总数: ${item.authoritativeTotal ?? 'unknown'}`);
+                    item.warnings.forEach((warning) => console.warn(`    警告: ${warning}`));
+                });
+                console.log(`  可用记录: ${finalResult.records.length}`);
+                console.log(`  确认/单来源/冲突: ${finalResult.confirmedRecords}/${finalResult.singleSourceRecords}/${finalResult.conflictRecords}`);
+                const settledCount = results.reduce((total, item) => total + item.settledCount, 0);
+                if (settledCount > 0)
+                    console.log(`  已结算预测: ${settledCount}`);
+            }
+            return 0;
+        }
+        if (action === 'import') {
+            if (!hasPl3Database(dataDir) && existsSync(path.join(dataDir, 'pl3.json'))) {
+                throw new Error('检测到旧 pl3.json，请先执行 data migrate --dry-run 和 data migrate --apply。');
+            }
+            const filePath = getArgumentValue(argv, '--file');
+            if (!filePath)
+                throw new Error('data import 必须提供 --file FILE。');
+            const result = await importPl3FileToStore({
+                dataDir,
+                filePath,
+                format: getArgumentValue(argv, '--format'),
+            });
+            printDataValue(asJson ? result : [
+                '排列3文件导入完成。',
+                `  数据库: ${result.databasePath}`,
+                `  输入记录: ${result.inputCount}`,
+                `  新 observation: ${result.insertedObservations}`,
+                `  重复 observation: ${result.repeatedObservations}`,
+                `  影响期数: ${result.affectedPeriods}`,
+                `  原始文件归档: ${result.rawPath}`,
+            ].join('\n'), asJson);
+            return 0;
+        }
+        if (action === 'export') {
+            if (!hasPl3Database(dataDir))
+                throw new Error('尚未启用 SQLite，请先运行 data migrate 或 data sync。');
+            const outputPath = getArgumentValue(argv, '--output');
+            if (!outputPath)
+                throw new Error('data export 必须提供 --output FILE。');
+            const result = await exportPl3Store({
+                dataDir,
+                outputPath,
+                format: getArgumentValue(argv, '--format'),
+            });
+            printDataValue(asJson ? result : `已导出 ${result.recordCount} 条排列3记录: ${result.outputPath}`, asJson);
+            return 0;
+        }
+        if (action === 'migrate') {
+            const apply = argv.includes('--apply');
+            const dryRun = argv.includes('--dry-run');
+            if (apply === dryRun)
+                throw new Error('data migrate 必须且只能指定 --dry-run 或 --apply。');
+            if (hasPl3Database(dataDir)) {
+                if (dryRun) {
+                    const preview = previewPl3SchemaMigration(dataDir);
+                    printDataValue(asJson ? preview : [
+                        '排列3数据库 schema 迁移预检完成。',
+                        `  数据库: ${preview.databasePath}`,
+                        `  当前版本: ${preview.currentVersion}`,
+                        `  目标版本: ${preview.targetVersion}`,
+                        `  待执行: ${preview.migrations.map((item) => `M00${item.version} ${item.name}`).join(', ') || '无'}`,
+                    ].join('\n'), asJson);
+                    return 0;
+                }
+                const result = await applyPl3SchemaMigration(dataDir);
+                printDataValue(asJson ? result : result.applied ? [
+                    '排列3数据库 schema 迁移完成。',
+                    `  当前版本: ${result.currentVersion}`,
+                    `  迁移前备份: ${result.backupPath}`,
+                    `  被替换数据库: ${result.replacedPath}`,
+                ].join('\n') : `排列3数据库 schema 已是最新版本 ${result.currentVersion}。`, asJson);
+                return 0;
+            }
+            if (dryRun) {
+                const preview = await previewLegacyPl3Migration(dataDir);
+                printDataValue(asJson ? preview : [
+                    '排列3迁移预检通过。',
+                    `  数据目录: ${preview.dataDir}`,
+                    `  历史记录: ${preview.recordCount}`,
+                    `  期号范围: ${preview.oldestPeriod || '未知'}..${preview.latestPeriod || '未知'}`,
+                    `  历史哈希: ${preview.recordHash || '无'}`,
+                    `  预测记录: ${preview.predictionCount}`,
+                    `  目标数据库: ${preview.databasePath}`,
+                ].join('\n'), asJson);
+                return preview.databaseExists || !preview.historyExists ? 1 : 0;
+            }
+            const result = await applyLegacyPl3Migration(dataDir);
+            printDataValue(asJson ? result : [
+                '排列3 SQLite 迁移完成。',
+                `  数据库: ${result.databasePath}`,
+                `  导入开奖记录: ${result.importedObservations}`,
+                `  保全预测记录: ${result.importedPredictions}`,
+                `  备份: ${result.backupPaths.join(', ') || '无'}`,
+                '  原 JSON 已保留，未启用双写。',
+            ].join('\n'), asJson);
+            return 0;
+        }
+        if (action === 'snapshot') {
+            if (!hasPl3Database(dataDir))
+                throw new Error('尚未启用 SQLite，请先运行 data migrate 或 data sync。');
+            const snapshotAction = argv[1];
+            if (!snapshotAction)
+                throw new Error('data snapshot 需要 create、list、inspect 或 verify。');
+            const readonly = snapshotAction !== 'create';
+            const store = openPl3Store({ dataDir, readonly, fileMustExist: true });
+            try {
+                if (snapshotAction === 'create') {
+                    const lastValue = getArgumentValue(argv, '--last');
+                    const fromPeriod = getArgumentValue(argv, '--from-period');
+                    const afterPeriod = getArgumentValue(argv, '--after-period');
+                    if (lastValue !== undefined && (fromPeriod || afterPeriod)) {
+                        throw new Error('snapshot 的 --last 与显式期号范围不能同时使用。');
+                    }
+                    const last = lastValue === undefined && !fromPeriod && !afterPeriod ? 2000 :
+                        lastValue === undefined ? undefined : Number(lastValue);
+                    if (last !== undefined && (!Number.isInteger(last) || last < 1)) {
+                        throw new Error('snapshot 的 --last 必须是正整数。');
+                    }
+                    const snapshot = store.createDatasetSnapshot({
+                        last,
+                        fromPeriod,
+                        afterPeriod,
+                        allowSingleSource: argv.includes('--allow-single-source'),
+                        codeCommit: process.env.LOTTERYMCP_CODE_COMMIT || process.env.GITHUB_SHA,
+                    });
+                    printDataValue(asJson ? snapshot : [
+                        '排列3数据 snapshot 创建完成。',
+                        `  Snapshot ID: ${snapshot.snapshotId}`,
+                        `  期号范围: ${snapshot.fromPeriod}..${snapshot.afterPeriod}`,
+                        `  记录: ${snapshot.recordCount}`,
+                        `  confirmed/single-source: ${snapshot.confirmedCount}/${snapshot.singleSourceCount}`,
+                        `  数据哈希: ${snapshot.dataHash}`,
+                    ].join('\n'), asJson);
+                    return 0;
+                }
+                if (snapshotAction === 'list') {
+                    const snapshots = store.listDatasetSnapshots({
+                        page: Number(getArgumentValue(argv, '--page') || 1),
+                        limit: Number(getArgumentValue(argv, '--limit') || 20),
+                    });
+                    if (asJson)
+                        console.log(JSON.stringify(snapshots, null, 2));
+                    else if (snapshots.length === 0)
+                        console.log('当前没有排列3数据 snapshot。');
+                    else
+                        snapshots.forEach((snapshot) => console.log(`${snapshot.snapshotId}  ${snapshot.fromPeriod}..${snapshot.afterPeriod}  ${snapshot.recordCount}  ${snapshot.quality}`));
+                    return 0;
+                }
+                if (snapshotAction === 'inspect') {
+                    const snapshotId = argv[2];
+                    if (!snapshotId)
+                        throw new Error('snapshot inspect 必须提供 SNAPSHOT_ID。');
+                    const snapshot = store.getDatasetSnapshot(snapshotId);
+                    if (!snapshot)
+                        throw new Error(`排列3数据 snapshot 不存在: ${snapshotId}`);
+                    printDataValue(asJson ? snapshot : [
+                        `Snapshot: ${snapshot.snapshotId}`,
+                        `  期号范围: ${snapshot.fromPeriod}..${snapshot.afterPeriod}`,
+                        `  记录: ${snapshot.recordCount}`,
+                        `  质量: ${snapshot.quality}`,
+                        `  confirmed/single-source: ${snapshot.confirmedCount}/${snapshot.singleSourceCount}`,
+                        `  数据哈希: ${snapshot.dataHash}`,
+                        `  创建时间: ${snapshot.createdAt}`,
+                        `  代码 commit: ${snapshot.codeCommit || '未记录'}`,
+                    ].join('\n'), asJson);
+                    return 0;
+                }
+                if (snapshotAction === 'verify') {
+                    const snapshotId = argv[2];
+                    if (!snapshotId)
+                        throw new Error('snapshot verify 必须提供 SNAPSHOT_ID。');
+                    const verification = store.verifyDatasetSnapshot(snapshotId);
+                    printDataValue(asJson ? verification : [
+                        `Snapshot ${snapshotId}: ${verification.valid ? '有效' : '无效'}`,
+                        `  记录: ${verification.actualRecordCount}/${verification.expectedRecordCount}`,
+                        `  哈希: ${verification.actualDataHash}`,
+                    ].join('\n'), asJson);
+                    return verification.valid ? 0 : 1;
+                }
+                throw new Error(`未知 snapshot 子命令: ${snapshotAction}`);
+            }
+            finally {
+                store.close();
+            }
+        }
+        if (action === 'conflicts') {
+            if (!hasPl3Database(dataDir))
+                throw new Error('尚未启用 SQLite，请先运行 data migrate。');
+            const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true });
+            try {
+                const type = getArgumentValue(argv, '--type');
+                if (type && !['date', 'numbers', 'both'].includes(type)) {
+                    throw new Error('conflicts 的 --type 只支持 date、numbers 或 both。');
+                }
+                const conflicts = store.getConflicts({
+                    fromPeriod: getArgumentValue(argv, '--from-period'),
+                    toPeriod: getArgumentValue(argv, '--to-period'),
+                    type: type,
+                });
+                if (asJson)
+                    console.log(JSON.stringify(conflicts, null, 2));
+                else if (conflicts.length === 0)
+                    console.log('当前没有未解决的排列3数据冲突。');
+                else
+                    conflicts.forEach((conflict) => {
+                        console.log(`第 ${conflict.period} 期 [${conflict.type}]:`);
+                        conflict.observations.forEach((item) => console.log(`  #${item.observationId} ${item.provider} ${item.drawDate} ${item.numbers} ${item.sourceUrl || ''}`.trimEnd()));
+                    });
+                return 0;
+            }
+            finally {
+                store.close();
+            }
+        }
+        if (action === 'resolve') {
+            if (!hasPl3Database(dataDir))
+                throw new Error('尚未启用 SQLite，请先运行 data migrate。');
+            const period = getArgumentValue(argv, '--period');
+            const observationId = Number(getArgumentValue(argv, '--observation-id'));
+            const reason = getArgumentValue(argv, '--reason');
+            const evidenceUrl = getArgumentValue(argv, '--evidence-url');
+            if (!period || !Number.isInteger(observationId) || observationId < 1 || !reason || !evidenceUrl) {
+                throw new Error('data resolve 需要 --period、--observation-id、--reason 和 --evidence-url。');
+            }
+            const store = openPl3Store({ dataDir });
+            try {
+                const record = store.resolveConflict({
+                    period,
+                    observationId,
+                    reason,
+                    evidenceUrl,
+                });
+                printDataValue(asJson ? record : `第 ${period} 期冲突已确认，采用 observation ${observationId}。`, asJson);
+                return 0;
+            }
+            finally {
+                store.close();
+            }
+        }
+        if (action === 'backup') {
+            const result = await backupPl3Database(dataDir);
+            printDataValue(asJson ? result : `排列3数据库备份完成: ${result.backupPath}`, asJson);
+            return 0;
+        }
+        if (action === 'gc') {
+            if (!hasPl3Database(dataDir))
+                throw new Error('尚未启用 SQLite，无法分析 raw 引用。');
+            const apply = argv.includes('--apply');
+            const dryRun = argv.includes('--dry-run');
+            if (apply === dryRun)
+                throw new Error('data gc 必须且只能指定 --dry-run 或 --apply。');
+            if (apply) {
+                const result = await applyPl3RawGcPlan(dataDir);
+                if (asJson)
+                    console.log(JSON.stringify(result, null, 2));
+                else
+                    console.log(`raw GC 完成: 删除 ${result.deletedFiles} 个文件，${result.deletedBytes} 字节。`);
+            }
+            else {
+                const result = await createPl3RawGcPlan(dataDir);
+                if (asJson)
+                    console.log(JSON.stringify(result, null, 2));
+                else
+                    console.log(`raw GC 预检: ${result.candidates.length} 个文件，${result.totalBytes} 字节。`);
+            }
+            return 0;
+        }
+        if (action === 'restore') {
+            const backupPath = getArgumentValue(argv, '--backup');
+            if (!backupPath)
+                throw new Error('data restore 必须提供 --backup FILE。');
+            const result = await restorePl3Database(dataDir, backupPath);
+            printDataValue(asJson ? result : `排列3数据库已恢复: ${result.databasePath}`, asJson);
+            return 0;
+        }
+        throw new Error(`未知 data 子命令: ${action}`);
+    }
+    catch (error) {
+        console.error(`排列3数据操作失败: ${error instanceof Error ? error.message : String(error)}`);
+        return 1;
+    }
+};
+const resolveExperimentCodeCommit = () => {
+    const explicit = String(process.env.LOTTERYMCP_CODE_COMMIT || process.env.GITHUB_SHA || '').trim();
+    if (explicit)
+        return explicit;
+    try {
+        const commit = execFileSync('git', ['rev-parse', 'HEAD'], {
+            cwd: process.cwd(),
+            encoding: 'utf8',
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+        const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
+            cwd: process.cwd(),
+            encoding: 'utf8',
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        if (!dirty.trim())
+            return commit;
+        const diff = execFileSync('git', ['diff', '--binary', 'HEAD'], {
+            cwd: process.cwd(),
+            encoding: 'buffer',
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'ignore'],
+            maxBuffer: 32 * 1024 * 1024,
+        });
+        const untracked = dirty.split(/\r?\n/).filter((line) => line.startsWith('?? ')).sort().join('\n');
+        const worktreeHash = createHash('sha256').update(diff).update(untracked).digest('hex').slice(0, 16);
+        return `${commit}-dirty-${worktreeHash}`;
+    }
+    catch {
+        return `lotterymcp-${process.env.npm_package_version || '0.5.0'}`;
+    }
+};
+const runExperimentCommand = async (argv) => {
+    if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
+        console.log(renderExperimentUsage());
+        return 0;
+    }
+    const action = argv[0];
+    const asJson = argv.includes('--json');
+    const config = await resolveConfig();
+    const dataDir = path.resolve(String(config.dataDir || '.lotterymcp-data'));
+    try {
+        if (!hasPl3Database(dataDir))
+            throw new Error('尚未启用 SQLite，请先运行 data migrate 或 data sync。');
+        const migration = previewPl3SchemaMigration(dataDir);
+        if (migration.migrationRequired) {
+            throw new Error(`实验需要 schema ${migration.targetVersion}，请先运行 lotterymcp data migrate --dry-run 和 --apply。`);
+        }
+        const readonly = action === 'list' || action === 'inspect';
+        const store = openPl3Store({ dataDir, readonly, fileMustExist: true });
+        try {
+            if (action === 'create') {
+                const specPath = argv[1];
+                if (!specPath || specPath.startsWith('-'))
+                    throw new Error('experiment create 必须提供 spec.json。');
+                const spec = JSON.parse(readFileSync(path.resolve(specPath), 'utf8'));
+                const created = createPl3Experiment(store, spec, resolveExperimentCodeCommit());
+                printDataValue(asJson ? created : [
+                    `实验已注册: ${created.experiment.experimentId}`,
+                    `  模式: ${created.experiment.mode}`,
+                    `  Dataset snapshot: ${created.experiment.datasetSnapshotId}`,
+                    `  Spec hash: ${created.experiment.specHash}`,
+                    `  Code commit: ${created.experiment.codeCommit}`,
+                ].join('\n'), asJson);
+                return 0;
+            }
+            if (action === 'list') {
+                const experiments = store.listExperiments({ limit: 100 });
+                if (asJson)
+                    console.log(JSON.stringify(experiments, null, 2));
+                else if (experiments.length === 0)
+                    console.log('当前没有排列3实验。');
+                else
+                    experiments.forEach((experiment) => console.log(`${experiment.experimentId}  ${experiment.status}  ${experiment.mode}  ${experiment.name}`));
+                return 0;
+            }
+            const experimentId = argv[1];
+            if (!experimentId || experimentId.startsWith('-'))
+                throw new Error(`experiment ${action} 必须提供 EXPERIMENT_ID。`);
+            if (action === 'inspect') {
+                const inspected = inspectPl3Experiment(store, experimentId);
+                printDataValue(asJson ? inspected : [
+                    `实验: ${inspected.experiment.experimentId}`,
+                    `  名称: ${inspected.experiment.name}`,
+                    `  状态: ${inspected.experiment.status}`,
+                    `  模式: ${inspected.experiment.mode}`,
+                    `  Dataset snapshot: ${inspected.experiment.datasetSnapshotId}`,
+                    `  已完成折: ${inspected.folds.filter((fold) => fold.status === 'complete').length}`,
+                    `  审计记录: ${inspected.audit.length}`,
+                    `  报告: ${inspected.experiment.reportPath || '尚未生成'}`,
+                ].join('\n'), asJson);
+                return 0;
+            }
+            if (action === 'run' || action === 'resume') {
+                const current = store.getExperiment(experimentId);
+                if (!current)
+                    throw new Error(`排列3实验不存在: ${experimentId}`);
+                if (action === 'resume' && current.status !== 'interrupted') {
+                    throw new Error(`experiment resume 只接受 interrupted 状态，当前为 ${current.status}。`);
+                }
+                const result = await runPl3Experiment(store, experimentId);
+                printDataValue(asJson ? result : [
+                    `实验开发区运行完成: ${experimentId}`,
+                    `  报告: ${result.reportPath}`,
+                    `  报告哈希: ${result.reportHash}`,
+                ].join('\n'), asJson);
+                return 0;
+            }
+            if (action === 'report') {
+                const result = await generatePl3ExperimentReport(store, experimentId);
+                printDataValue(asJson ? result : [
+                    `实验报告已生成: ${result.reportPath}`,
+                    `  Markdown: ${result.markdownPath}`,
+                    `  报告哈希: ${result.reportHash}`,
+                ].join('\n'), asJson);
+                return 0;
+            }
+            if (action === 'evaluate') {
+                if (!argv.includes('--frozen') || !argv.includes('--confirm')) {
+                    throw new Error('冻结评估必须同时提供 --frozen 和 --confirm。');
+                }
+                const result = await evaluatePl3ExperimentFrozen(store, experimentId);
+                printDataValue(asJson ? result : [
+                    `冻结区评估完成: ${experimentId}`,
+                    `  报告: ${result.reportPath}`,
+                    `  报告哈希: ${result.reportHash}`,
+                ].join('\n'), asJson);
+                return 0;
+            }
+            throw new Error(`未知 experiment 子命令: ${action}`);
+        }
+        finally {
+            store.close();
+        }
+    }
+    catch (error) {
+        console.error(`排列3实验操作失败: ${error instanceof Error ? error.message : String(error)}`);
+        return 1;
+    }
+};
 const runStartupMenu = async () => {
     console.log(MENU_TEXT);
     if (!canShowInteractiveMenu()) {
@@ -701,6 +1353,12 @@ const main = async () => {
     }
     if (command === 'sync') {
         return runSyncCommand(args.slice(1));
+    }
+    if (command === 'data') {
+        return runDataCommand(args.slice(1));
+    }
+    if (command === 'experiment') {
+        return runExperimentCommand(args.slice(1));
     }
     console.error(`未知命令: ${command}`);
     console.log(HELP_TEXT);

@@ -1,5 +1,8 @@
 import { type Pl3PayoutConfig, type Pl3PredictionQuery, type Pl3PredictionResult, type Pl3LotteryType, type Pl3Record } from './pl3-prediction.js';
 export * from './pl3-prediction.js';
+export * from './pl3-store.js';
+export * from './pl3-features.js';
+export * from './pl3-experiments.js';
 /** @deprecated Provider selection is dynamic. Read meta.provider instead. */
 export declare const LOTTERY_MCP_PROVIDER = "remote";
 export declare const PL3_DATA_TOOLS: readonly ["lottery.latest", "lottery.history", "lottery.periods", "lottery.summary"];

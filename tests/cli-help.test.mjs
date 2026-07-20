@@ -1,6 +1,6 @@
 ﻿import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
@@ -188,13 +188,64 @@ test('official MCP snippet does not include remote credentials', async () => {
 })
 
 test('cli subcommands expose focused help without hidden aliases', async () => {
-  for (const command of ['init', 'predict', 'sync', 'doctor']) {
+  for (const command of ['init', 'predict', 'sync', 'doctor', 'data', 'experiment']) {
     const result = await runCli([command, '--help'])
     assert.equal(result.status, 0, command)
     assert.match(result.stdout, /用法:/)
-    assert.doesNotMatch(result.stdout, /--all|pl3_markov/)
+    assert.doesNotMatch(result.stdout, /(?:^|\s)--all(?:\s|$)|pl3_markov/)
     assert.equal(result.stderr, '')
   }
+})
+
+test('cli data migration performs explicit dry-run and side-by-side apply', async () => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-cli-migrate-'))
+  writeFileSync(path.join(dataDir, 'pl3.json'), JSON.stringify({
+    records: [{
+      lotteryType: 'pl3',
+      period: '26180',
+      drawDate: '2026-07-01',
+      numbers: '1,2,3',
+      numbersList: [1, 2, 3],
+    }],
+  }), 'utf8')
+  writeFileSync(path.join(dataDir, 'pl3-predictions.json'), JSON.stringify({
+    version: 1,
+    predictions: [{ predictionId: 'cli-legacy-prediction' }],
+  }), 'utf8')
+  const env = { LOTTERYMCP_DATA_DIR: dataDir }
+
+  const before = await runCli(['data', 'status'], { env })
+  assert.equal(before.status, 0)
+  assert.match(before.stdout, /legacy-json/)
+  assert.match(before.stdout, /有效记录: 1/)
+
+  const dryRun = await runCli(['data', 'migrate', '--dry-run'], { env })
+  assert.equal(dryRun.status, 0)
+  assert.match(dryRun.stdout, /迁移预检通过/)
+  assert.equal(existsSync(path.join(dataDir, 'pl3.sqlite')), false)
+
+  const applied = await runCli(['data', 'migrate', '--apply'], { env })
+  assert.equal(applied.status, 0)
+  assert.match(applied.stdout, /SQLite 迁移完成/)
+  assert.equal(existsSync(path.join(dataDir, 'pl3.sqlite')), true)
+  assert.equal(existsSync(path.join(dataDir, 'pl3.json')), true)
+
+  const after = await runCli(['data', 'status'], { env })
+  assert.equal(after.status, 0)
+  assert.match(after.stdout, /数据存储: sqlite/)
+  assert.match(after.stdout, /可用记录: 1/)
+  assert.match(after.stdout, /已保全旧预测: 1/)
+
+  const schemaDryRun = await runCli(['data', 'migrate', '--dry-run'], { env })
+  assert.equal(schemaDryRun.status, 0)
+  assert.match(schemaDryRun.stdout, /当前版本: 1/)
+  assert.match(schemaDryRun.stdout, /M002 p3-experiment-foundation/)
+  const schemaApplied = await runCli(['data', 'migrate', '--apply'], { env })
+  assert.equal(schemaApplied.status, 0)
+  assert.match(schemaApplied.stdout, /schema 迁移完成/)
+  const experiments = await runCli(['experiment', 'list'], { env })
+  assert.equal(experiments.status, 0)
+  assert.match(experiments.stdout, /当前没有排列3实验/)
 })
 
 test('cli doctor performs a real health check and reports success in Chinese', async () => {
@@ -216,6 +267,7 @@ test('cli doctor performs a real health check and reports success in Chinese', a
   try {
     const result = await runCli(['doctor'], {
       env: {
+        LOTTERYMCP_DATA_MODE: 'remote',
         NEUXSBOT_API_BASE_URL: server.origin,
         NEUXSBOT_TOKEN: 'doctor-token-001',
         NEUXSBOT_DEFAULT_PERIODS: '100',
@@ -253,6 +305,7 @@ test('cli doctor reports friendly guidance when the website rate limits requests
   try {
     const result = await runCli(['doctor'], {
       env: {
+        LOTTERYMCP_DATA_MODE: 'remote',
         NEUXSBOT_API_BASE_URL: server.origin,
         NEUXSBOT_TOKEN: 'doctor-token-002',
         NEUXSBOT_DEFAULT_PERIODS: '100',
@@ -287,6 +340,7 @@ test('cli serve stays silent on stdout when config is incomplete', () => {
     env: {
       ...process.env,
       NBCP_FORCE_BANNER: '1',
+      LOTTERYMCP_DATA_MODE: 'remote',
       NEUXSBOT_API_BASE_URL: '',
       NEUXSBOT_TOKEN: '',
     },
