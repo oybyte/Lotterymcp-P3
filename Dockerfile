@@ -1,6 +1,10 @@
 FROM node:20-bookworm-slim AS build
 
-RUN apt-get update \
+RUN sed -i \
+    -e 's|http://deb.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' \
+    -e 's|http://deb.debian.org/debian|http://mirrors.aliyun.com/debian|g' \
+    /etc/apt/sources.list.d/debian.sources \
+  && apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 
@@ -12,6 +16,7 @@ COPY packages/mcp-server/package.json packages/mcp-server/package.json
 COPY packages/cli/package.json packages/cli/package.json
 COPY packages/nbcp/package.json packages/nbcp/package.json
 
+RUN npm config set registry https://registry.npmmirror.com
 RUN npm ci
 
 COPY . .
@@ -19,7 +24,11 @@ RUN npm run build && npm prune --omit=dev
 
 FROM node:20-bookworm-slim
 
-RUN apt-get update \
+RUN sed -i \
+    -e 's|http://deb.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' \
+    -e 's|http://deb.debian.org/debian|http://mirrors.aliyun.com/debian|g' \
+    /etc/apt/sources.list.d/debian.sources \
+  && apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /data /backups /secrets \
