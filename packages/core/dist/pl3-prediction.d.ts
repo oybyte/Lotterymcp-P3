@@ -75,7 +75,7 @@ export type Pl3BacktestResult = {
     cases: Pl3BacktestCase[];
 };
 export type Pl3Settlement = {
-    status: 'pending' | 'settled';
+    status: 'pending' | 'provisional' | 'confirmed' | 'disputed' | 'settled';
     targetPeriod?: string;
     drawDate?: string;
     actualNumbers?: [number, number, number];
@@ -83,6 +83,22 @@ export type Pl3Settlement = {
     returnAmount?: number;
     profit?: number;
     settledAt?: string;
+    providerStatus?: 'confirmed' | 'single_source' | 'unknown';
+    confirmedAt?: string;
+    disputedAt?: string;
+    revisions?: Pl3SettlementRevision[];
+};
+export type Pl3SettlementRevision = {
+    status: 'provisional' | 'confirmed' | 'disputed' | 'settled';
+    targetPeriod: string;
+    drawDate: string;
+    actualNumbers: [number, number, number];
+    providerStatus: 'confirmed' | 'single_source' | 'unknown';
+    winningTickets: number;
+    returnAmount: number;
+    profit: number;
+    revisedAt: string;
+    reason: string;
 };
 export type Pl3PredictionResult = {
     predictionId: string;
@@ -156,5 +172,8 @@ export declare const settlePl3Predictions: (ledgerPath: string, sourceRecords: r
 export declare const getPl3PredictionLedgerSummary: (ledgerPath: string) => Promise<{
     total: number;
     pending: number;
+    provisional: number;
+    confirmed: number;
+    disputed: number;
     settled: number;
 }>;

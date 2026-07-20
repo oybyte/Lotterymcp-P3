@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { PL3_LOTTERY_TYPE, Pl3PredictionError, normalizePl3Records, } from './pl3-prediction.js';
 export const PL3_DATABASE_FILENAME = 'pl3.sqlite';
 export const PL3_DATABASE_SCHEMA_VERSION = 1;
-export const PL3_DATABASE_LATEST_SCHEMA_VERSION = 2;
+export const PL3_DATABASE_LATEST_SCHEMA_VERSION = 3;
 const OFFICIAL_CONFIRMATION_PROVIDERS = new Set(['lottery-gov-cn', 'zhcw']);
 const DEFAULT_DATA_DIR = '.lotterymcp-data';
 const MAINTENANCE_LOCK_MAX_AGE_MS = 120_000;
@@ -243,6 +243,53 @@ CREATE TABLE experiment_audit (
 );
 `;
 const migration002Checksum = sha256(createMigration002);
+const createMigration003 = `
+CREATE TABLE online_prediction_runs (
+  run_id TEXT PRIMARY KEY,
+  prediction_id TEXT,
+  status TEXT NOT NULL CHECK (status IN ('running', 'success', 'failed')),
+  data_mode TEXT NOT NULL,
+  after_period TEXT,
+  target_period TEXT,
+  report_path TEXT,
+  report_hash TEXT,
+  error_message TEXT,
+  started_at TEXT NOT NULL,
+  completed_at TEXT
+);
+
+CREATE INDEX idx_online_prediction_runs_started
+  ON online_prediction_runs(started_at DESC);
+
+CREATE TABLE operational_events (
+  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  level TEXT NOT NULL CHECK (level IN ('info', 'warning', 'error')),
+  event_type TEXT NOT NULL,
+  message TEXT NOT NULL,
+  details_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_operational_events_created
+  ON operational_events(created_at DESC);
+
+CREATE TABLE notification_deliveries (
+  delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('success', 'failed')),
+  target TEXT,
+  message_hash TEXT NOT NULL,
+  error_message TEXT,
+  delivered_at TEXT NOT NULL,
+  UNIQUE(channel, dedupe_key)
+);
+`;
+const migration003Checksum = sha256(createMigration003);
+const schemaMigrations = [
+    { version: 2, name: 'p3-experiment-foundation', checksum: migration002Checksum, sql: createMigration002 },
+    { version: 3, name: 'p3-online-operations', checksum: migration003Checksum, sql: createMigration003 },
+];
 const applyMigrations = (database) => {
     database.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1162,6 +1209,113 @@ export class Pl3Store {
     `).run(reportPath, reportHash, new Date().toISOString(), experimentId);
         return this.getExperiment(experimentId);
     }
+    recordOnlinePredictionRun(input) {
+        if (this.getSchemaVersion() < 3)
+            throw new Error('排列3数据库尚未应用 M003。');
+        const startedAt = input.startedAt || new Date().toISOString();
+        this.database.prepare(`
+      INSERT INTO online_prediction_runs(
+        run_id, prediction_id, status, data_mode, after_period, target_period,
+        report_path, report_hash, error_message, started_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET
+        prediction_id = excluded.prediction_id,
+        status = excluded.status,
+        data_mode = excluded.data_mode,
+        after_period = excluded.after_period,
+        target_period = excluded.target_period,
+        report_path = excluded.report_path,
+        report_hash = excluded.report_hash,
+        error_message = excluded.error_message,
+        completed_at = excluded.completed_at
+    `).run(input.runId, input.predictionId || null, input.status, input.dataMode, input.afterPeriod || null, input.targetPeriod || null, input.reportPath || null, input.reportHash || null, input.errorMessage || null, startedAt, input.completedAt || null);
+        return this.getOnlinePredictionRun(input.runId);
+    }
+    getOnlinePredictionRun(runId) {
+        if (this.getSchemaVersion() < 3)
+            throw new Error('排列3数据库尚未应用 M003。');
+        const row = this.database.prepare('SELECT * FROM online_prediction_runs WHERE run_id = ?').get(runId);
+        return row ? this.toOnlinePredictionRun(row) : null;
+    }
+    listOnlinePredictionRuns(query = {}) {
+        if (this.getSchemaVersion() < 3)
+            throw new Error('排列3数据库尚未应用 M003。');
+        const limit = Math.max(1, Math.min(100, Math.floor(Number(query.limit) || 20)));
+        return this.database.prepare(`
+      SELECT * FROM online_prediction_runs ORDER BY started_at DESC LIMIT ?
+    `).all(limit).map((row) => this.toOnlinePredictionRun(row));
+    }
+    toOnlinePredictionRun(row) {
+        return {
+            runId: String(row.run_id),
+            predictionId: row.prediction_id == null ? null : String(row.prediction_id),
+            status: row.status,
+            dataMode: String(row.data_mode),
+            afterPeriod: row.after_period == null ? null : String(row.after_period),
+            targetPeriod: row.target_period == null ? null : String(row.target_period),
+            reportPath: row.report_path == null ? null : String(row.report_path),
+            reportHash: row.report_hash == null ? null : String(row.report_hash),
+            errorMessage: row.error_message == null ? null : String(row.error_message),
+            startedAt: String(row.started_at),
+            completedAt: row.completed_at == null ? null : String(row.completed_at),
+        };
+    }
+    recordOperationalEvent(input) {
+        if (this.getSchemaVersion() < 3)
+            throw new Error('排列3数据库尚未应用 M003。');
+        const result = this.database.prepare(`
+      INSERT INTO operational_events(level, event_type, message, details_json, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(input.level, input.eventType, input.message, canonicalize(input.details || {}), new Date().toISOString());
+        return Number(result.lastInsertRowid);
+    }
+    listOperationalEvents(query = {}) {
+        if (this.getSchemaVersion() < 3)
+            throw new Error('排列3数据库尚未应用 M003。');
+        const limit = Math.max(1, Math.min(200, Math.floor(Number(query.limit) || 50)));
+        return this.database.prepare(`
+      SELECT * FROM operational_events ORDER BY event_id DESC LIMIT ?
+    `).all(limit).map((row) => ({
+            eventId: Number(row.event_id),
+            level: row.level,
+            eventType: String(row.event_type),
+            message: String(row.message),
+            details: JSON.parse(String(row.details_json || '{}')),
+            createdAt: String(row.created_at),
+        }));
+    }
+    recordNotificationDelivery(input) {
+        if (this.getSchemaVersion() < 3)
+            throw new Error('排列3数据库尚未应用 M003。');
+        this.database.prepare(`
+      INSERT INTO notification_deliveries(
+        channel, dedupe_key, status, target, message_hash, error_message, delivered_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(channel, dedupe_key) DO UPDATE SET
+        status = excluded.status,
+        target = excluded.target,
+        message_hash = excluded.message_hash,
+        error_message = excluded.error_message,
+        delivered_at = excluded.delivered_at
+    `).run(input.channel, input.dedupeKey, input.status, input.target || null, input.messageHash, input.errorMessage || null, new Date().toISOString());
+    }
+    listNotificationDeliveries(query = {}) {
+        if (this.getSchemaVersion() < 3)
+            throw new Error('排列3数据库尚未应用 M003。');
+        const limit = Math.max(1, Math.min(100, Math.floor(Number(query.limit) || 20)));
+        return this.database.prepare(`
+      SELECT * FROM notification_deliveries ORDER BY delivery_id DESC LIMIT ?
+    `).all(limit).map((row) => ({
+            deliveryId: Number(row.delivery_id),
+            channel: String(row.channel),
+            dedupeKey: String(row.dedupe_key),
+            status: row.status,
+            target: row.target == null ? null : String(row.target),
+            messageHash: String(row.message_hash),
+            errorMessage: row.error_message == null ? null : String(row.error_message),
+            deliveredAt: String(row.delivered_at),
+        }));
+    }
     importLegacyPredictions(predictions) {
         const now = new Date().toISOString();
         return this.database.transaction(() => {
@@ -1385,6 +1539,10 @@ export const previewPl3SchemaMigration = (dataDir = DEFAULT_DATA_DIR) => {
         if (migration002 && migration002.checksum !== migration002Checksum) {
             throw new Error('排列3数据库 M002 校验和不匹配。');
         }
+        const migration003 = rows.find((row) => row.version === 3);
+        if (migration003 && migration003.checksum !== migration003Checksum) {
+            throw new Error('排列3数据库 M003 校验和不匹配。');
+        }
         if (currentVersion > PL3_DATABASE_LATEST_SCHEMA_VERSION) {
             throw new Error(`数据库 schema ${currentVersion} 高于当前程序支持的 ${PL3_DATABASE_LATEST_SCHEMA_VERSION}。`);
         }
@@ -1393,9 +1551,9 @@ export const previewPl3SchemaMigration = (dataDir = DEFAULT_DATA_DIR) => {
             currentVersion,
             targetVersion: PL3_DATABASE_LATEST_SCHEMA_VERSION,
             migrationRequired: currentVersion < PL3_DATABASE_LATEST_SCHEMA_VERSION,
-            migrations: currentVersion < 2
-                ? [{ version: 2, name: 'p3-experiment-foundation', checksum: migration002Checksum }]
-                : [],
+            migrations: schemaMigrations
+                .filter((migration) => migration.version > currentVersion)
+                .map(({ version, name, checksum }) => ({ version, name, checksum })),
         };
     }
     finally {
@@ -1422,15 +1580,17 @@ export const applyPl3SchemaMigration = async (dataDir = DEFAULT_DATA_DIR) => {
             staging = new Database(stagingPath, { fileMustExist: true });
             staging.pragma('foreign_keys = ON');
             staging.transaction(() => {
-                staging.exec(createMigration002);
-                staging.prepare('INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)').run(2, 'p3-experiment-foundation', migration002Checksum, new Date().toISOString());
+                for (const migration of schemaMigrations.filter((item) => item.version > refreshed.currentVersion)) {
+                    staging.exec(migration.sql);
+                    staging.prepare('INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)').run(migration.version, migration.name, migration.checksum, new Date().toISOString());
+                }
             })();
             const integrity = staging.pragma('integrity_check', { simple: true });
             if (integrity !== 'ok')
-                throw new Error(`M002 完整性检查失败: ${String(integrity)}`);
+                throw new Error(`schema 迁移完整性检查失败: ${String(integrity)}`);
             const foreignKeyErrors = staging.pragma('foreign_key_check');
             if (foreignKeyErrors.length > 0)
-                throw new Error('M002 外键检查失败。');
+                throw new Error('schema 迁移外键检查失败。');
             staging.close();
             staging = undefined;
             const current = new Database(refreshed.databasePath, { fileMustExist: true });

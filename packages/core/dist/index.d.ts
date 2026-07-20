@@ -114,6 +114,9 @@ export type Pl3PredictionService = {
     getLedgerSummary(): Promise<{
         total: number;
         pending: number;
+        provisional: number;
+        confirmed: number;
+        disputed: number;
         settled: number;
     }>;
 };
@@ -121,6 +124,7 @@ export type Pl3DrawRecord = Pl3Record & {
     source?: string;
     sourceUrl?: string;
     rawProvider?: string;
+    status?: 'confirmed' | 'single_source';
 };
 export type Pl3PeriodRecord = Pick<Pl3DrawRecord, 'lotteryType' | 'period' | 'drawDate'>;
 export type Pl3Summary = {

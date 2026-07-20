@@ -150,6 +150,7 @@ const normalizePl3DrawRecords = (records, context) => {
                 ...(typeof source?.source === 'string' ? { source: source.source } : {}),
                 ...(typeof source?.sourceUrl === 'string' ? { sourceUrl: source.sourceUrl } : {}),
                 ...(typeof source?.rawProvider === 'string' ? { rawProvider: source.rawProvider } : {}),
+                ...(source?.status === 'confirmed' || source?.status === 'single_source' ? { status: source.status } : {}),
             };
         });
     }
@@ -169,6 +170,7 @@ const readOfficialCache = async (dataDir, lotteryType) => {
                 drawDate: record.drawDate,
                 numbers: record.numbers,
                 numbersList: record.numbersList,
+                status: record.status,
                 source: 'official',
                 sourceUrl: record.sourceUrl,
                 rawProvider: record.provider,

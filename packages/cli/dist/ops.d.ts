@@ -1,0 +1,109 @@
+import http from 'node:http';
+import { type LotteryMcpConfig, type Pl3PlayType, type Pl3PredictionResult } from 'lotterymcp-core';
+import { type SyncOfficialPl3StoreResult } from './official-sync.js';
+export type Pl3DataBundleManifest = {
+    version: 1;
+    createdAt: string;
+    dataDir: string;
+    database: {
+        file: 'pl3.sqlite';
+        sha256: string;
+        bytes: number;
+    };
+    ledger?: {
+        file: 'pl3-predictions.json';
+        sha256: string;
+        bytes: number;
+    };
+};
+export declare const createPl3DataBundle: (input: {
+    dataDir: string;
+    outputDir: string;
+}) => Promise<{
+    outputDir: string;
+    manifest: Pl3DataBundleManifest;
+    sourceBackupPath: string;
+}>;
+export declare const verifyPl3DataBundle: (bundleDir: string) => Promise<{
+    bundleDir: string;
+    manifest: Pl3DataBundleManifest;
+    valid: boolean;
+    checks: {
+        file: string;
+        expectedSha256: string;
+        actualSha256: string;
+        expectedBytes: number;
+        actualBytes: number;
+        valid: boolean;
+    }[];
+}>;
+export declare const restorePl3DataBundle: (input: {
+    dataDir: string;
+    bundleDir: string;
+}) => Promise<{
+    ledgerRestoredPath: string | null;
+    verification: {
+        bundleDir: string;
+        manifest: Pl3DataBundleManifest;
+        valid: boolean;
+        checks: {
+            file: string;
+            expectedSha256: string;
+            actualSha256: string;
+            expectedBytes: number;
+            actualBytes: number;
+            valid: boolean;
+        }[];
+    };
+    databasePath: string;
+    replacedPath: string | null;
+    safetyBackupPath: string | null;
+}>;
+export declare const writePl3DailyReport: (input: {
+    dataDir: string;
+    prediction: Pl3PredictionResult;
+    sync?: SyncOfficialPl3StoreResult;
+}) => Promise<{
+    reportDir: string;
+    reportPath: string;
+    markdownPath: string;
+    htmlPath: string;
+    reportHash: string;
+}>;
+export declare const runPl3DailyOnce: (input: {
+    config: LotteryMcpConfig;
+    periods?: number;
+    tickets?: number;
+    playType?: Pl3PlayType;
+    sync?: boolean;
+    migrate?: boolean;
+    notify?: boolean;
+}) => Promise<{
+    runId: string;
+    prediction: Pl3PredictionResult;
+    report: {
+        reportDir: string;
+        reportPath: string;
+        markdownPath: string;
+        htmlPath: string;
+        reportHash: string;
+    };
+    sync: SyncOfficialPl3StoreResult | undefined;
+    notification: {
+        skipped: boolean;
+        channel: "enterprise-wechat";
+    } | {
+        skipped: boolean;
+    };
+}>;
+export declare const servePl3Reports: (input: {
+    dataDir: string;
+    host?: string;
+    port?: number;
+}) => Promise<{
+    server: http.Server<typeof http.IncomingMessage, typeof http.ServerResponse>;
+    url: string;
+    reportsDir: string;
+}>;
+export declare const listReportDays: (dataDir: string) => Promise<string[]>;
+export declare const getPl3DatabasePathForOps: (dataDir: string) => string;

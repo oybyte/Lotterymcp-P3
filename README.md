@@ -15,6 +15,7 @@ Lotterymcp 是一个排列3（P3）历史数据、MCP 接入和本地确定性�
 - [MCP 接入说明](docs/mcp-usage.zh-CN.md)
 - [分析问题示例](docs/prompt-templates.zh-CN.md)
 - [排列3个人研究实验室产品方案](docs/p3-research-product-plan.zh-CN.md)
+- [私有服务器部署说明](docs/server-deployment.zh-CN.md)
 
 ## 能做什么
 
@@ -27,7 +28,8 @@ Lotterymcp 是一个排列3（P3）历史数据、MCP 接入和本地确定性�
 - 生成不可变 As-of 特征，并注册可恢复、可审计的 nested walk-forward 实验。
 - 按直选、组三、组六或混合玩法生成候选排序。
 - 对实际候选注数执行 walk-forward 回测，输出成本、名义奖金和历史 ROI。
-- 保存预测账本，并在下一期开奖进入缓存后自动结算。
+- 保存预测账本，并在下一期开奖进入缓存后按 `provisional/confirmed/disputed` 复盘。
+- 在个人服务器上每日自动同步、预测、生成静态报告并发送企业微信通知。
 
 ## 安装
 
@@ -72,7 +74,10 @@ lotterymcp data conflicts
 lotterymcp data snapshot create --last 2000
 lotterymcp data gc --dry-run
 lotterymcp data backup
+lotterymcp data bundle create --output transfer-bundle
 lotterymcp predict --periods 200 --tickets 10 --play mixed
+lotterymcp ops run-once --migrate
+lotterymcp ops serve-reports --host 127.0.0.1 --port 4317
 ```
 
 旧版 `analyze pl3` 和 `analyze p3` 仍作为隐藏兼容入口，统一调用同一个 P3 预测核心。
@@ -180,7 +185,7 @@ snapshot 默认只接受 `confirmed` 数据。`--allow-single-source` 仅用于�
 
 ## 可复现实验
 
-实验功能使用显式 M002。程序不会在 `doctor`、`serve` 或普通同步时隐式迁移数据库：
+实验和运维功能使用显式 schema 迁移。程序不会在 `doctor`、`serve` 或普通同步时隐式迁移数据库：
 
 ```bash
 lotterymcp data migrate --dry-run
@@ -202,6 +207,34 @@ lotterymcp experiment evaluate EXPERIMENT_ID --frozen --confirm
 特征只读取 dataset snapshot 中 `afterPeriod` 及之前的数据。参数在每个外层折内部选择，标准化主指标固定为 `normalizedRank.mean`；ROI 不参与选参或晋级。冻结区在显式评估前不进入报告，每个 confirmatory experiment 只允许尝试一次冻结评估。相同 spec、snapshot、代码标识和 seed 产生相同实验 ID 与报告哈希。
 
 当前 evaluator 包含 `uniform-theory`、`random-monte-carlo` 和 `weighted-frequency-v1`。它们用于建立研究基线和验证流程，不构成开奖可预测性或收益承诺。
+
+## 私有服务器部署
+
+无公网域名时推荐第一阶段使用 Docker Compose 加 SSH 隧道，不开放 80/443：
+
+```bash
+mkdir -p /opt/lotterymcp-p3/{data,secrets,backups}
+docker compose up -d --build
+docker compose exec worker npx --yes lotterymcp@latest ops run-once --migrate
+```
+
+本地访问报告：
+
+```bash
+ssh -N -L 4317:127.0.0.1:4317 lotterymcp@SERVER_IP
+```
+
+浏览器打开 `http://127.0.0.1:4317/`。Compose 只把报告端口绑定到服务器 `127.0.0.1`，公网不能直接访问。
+
+从本机迁移数据到服务器时不要直接复制 SQLite 目录，使用可校验 bundle：
+
+```bash
+lotterymcp data bundle create --output transfer-bundle
+lotterymcp data bundle verify --bundle transfer-bundle
+lotterymcp data bundle restore --bundle transfer-bundle
+```
+
+企业微信通知使用环境变量 `LOTTERYMCP_WECHAT_WEBHOOK`。Webhook、云厂商 AccessKey 和备份加密密钥不要写入仓库。
 
 ## MCP 工具
 
@@ -232,7 +265,7 @@ lotterymcp experiment evaluate EXPERIMENT_ID --frozen --confirm
 ## 配置说明
 
 - `NEUXSBOT_TOKEN` 环境变量优先于本地配置文件。多人机器和 CI 建议使用环境变量。
-- 默认数据目录是 `.lotterymcp-data/`，SQLite 档案为 `pl3.sqlite`，原始响应保存在 `raw/`。预测账本暂时继续使用 `pl3-predictions.json`，将在 Shadow 阶段迁入数据库。
+- 默认数据目录是 `.lotterymcp-data/`，SQLite 档案为 `pl3.sqlite`，原始响应保存在 `raw/`。预测账本暂时继续使用 `pl3-predictions.json`；M003 只记录线上运行、事件和通知投递。
 - 默认单注成本为 2 元，名义奖金为直选 1040、组三 346、组六 173；可分别通过 `LOTTERYMCP_PL3_STAKE`、`LOTTERYMCP_PL3_PAYOUT_DIRECT`、`LOTTERYMCP_PL3_PAYOUT_GROUP3`、`LOTTERYMCP_PL3_PAYOUT_GROUP6` 覆盖。
 - 奖金、回报和 ROI 都是按配置计算的历史模拟，不构成收益承诺。
 

@@ -138,7 +138,7 @@ export const createLotteryMcpServer = (options) => {
     const client = createLotteryMcpClient(options);
     const server = new McpServer({
         name: 'neuxsbot-lottery-mcp',
-        version: '0.5.0',
+        version: '0.6.0',
     });
     const toolCatalog = createLotteryToolCatalog(client, {
         defaultPeriods: options.defaultPeriods,

@@ -1,6 +1,6 @@
 {
   "name": "neuxnbcp",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": false,
   "type": "module",
   "description": "Lotterymcp CLI for P3 data archives, reproducible experiments, prediction, and MCP access",
@@ -22,8 +22,8 @@
   "dependencies": {
     "csv-parse": "^6.2.1",
     "csv-stringify": "^6.8.1",
-    "lotterymcp-core": "0.5.0",
-    "lotterymcp-server": "0.5.0"
+    "lotterymcp-core": "0.6.0",
+    "lotterymcp-server": "0.6.0"
   },
   "engines": {
     "node": ">=20"

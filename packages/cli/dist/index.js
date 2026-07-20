@@ -11,6 +11,7 @@ import { renderNbcpBanner, shouldShowBanner } from './banner.js';
 import { exportPl3Store, importPl3FileToStore } from './data-files.js';
 import { applyPl3RawGcPlan, createPl3RawGcPlan } from './data-gc.js';
 import { syncOfficialFile, syncOfficialPl3, syncOfficialPl3ToStore } from './official-sync.js';
+import { createPl3DataBundle, listReportDays, restorePl3DataBundle, runPl3DailyOnce, servePl3Reports, verifyPl3DataBundle, } from './ops.js';
 const WEBSITE_URL = 'https://www.neuxsbot.com';
 const MEMBER_CENTER_URL = 'https://www.neuxsbot.com/member';
 const TOKEN_PAGE_URL = 'https://www.neuxsbot.com/member/api-keys';
@@ -46,6 +47,7 @@ const HELP_TEXT = `临时打开菜单:
   sync             同步官方公开开奖数据到本地缓存
   data             管理 SQLite 数据档案、迁移和冲突
   experiment       注册和运行可复现实验
+  ops              运行每日预测闭环和本地报告服务
 
 说明:
   predict/analyze 共用内置 TypeScript P3 预测核心。
@@ -101,6 +103,15 @@ const renderExperimentUsage = () => `用法:
 
 说明:
   实验只读取 immutable dataset snapshot；冻结区只能显式确认后评估一次。
+`;
+const renderOpsUsage = () => `用法:
+  lotterymcp ops run-once [--periods 200] [--tickets 10] [--play mixed] [--no-sync] [--migrate] [--no-notify] [--json]
+  lotterymcp ops serve-reports [--host 127.0.0.1] [--port 4317]
+  lotterymcp ops reports [--json]
+
+说明:
+  serve-reports 默认只监听 127.0.0.1，适合通过 SSH 隧道远程访问。
+  run-once 会同步 P3 数据、结算待预测、生成新预测和静态报告。
 `;
 const isPositiveInteger = (value) => /^\d+$/.test(value.trim());
 const buildNextConfig = (currentConfig, input) => ({
@@ -370,7 +381,7 @@ const runDoctor = async (argv = []) => {
             payouts: getPredictionPayouts(),
         });
         const ledger = await predictionService.getLedgerSummary();
-        console.log(`预测账本: 总计 ${ledger.total}，待结算 ${ledger.pending}，已结算 ${ledger.settled}`);
+        console.log(`预测账本: 总计 ${ledger.total}，待结算 ${ledger.pending}，暂定 ${ledger.provisional}，确认 ${ledger.confirmed}，争议 ${ledger.disputed}`);
         const dataDir = String(config.dataDir || '.lotterymcp-data');
         if (hasPl3Database(dataDir)) {
             const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true });
@@ -379,7 +390,7 @@ const runDoctor = async (argv = []) => {
                 const snapshots = store.listDatasetSnapshots({ limit: 100 });
                 console.log(`研究数据库: schema ${schemaVersion}/${PL3_DATABASE_LATEST_SCHEMA_VERSION}，snapshot ${snapshots.length}`);
                 if (schemaVersion < PL3_DATABASE_LATEST_SCHEMA_VERSION) {
-                    console.log('实验基础设施: 待迁移，请先运行 lotterymcp data migrate --dry-run');
+                    console.log('实验/运维基础设施: 待迁移，请先运行 lotterymcp data migrate --dry-run');
                 }
                 else {
                     const experiments = store.listExperiments({ limit: 100 });
@@ -388,7 +399,9 @@ const runDoctor = async (argv = []) => {
                         return counts;
                     }, {});
                     const activeLocks = store.listRuntimeLocks().filter((lock) => Date.parse(String(lock.expires_at)) > Date.now());
+                    const runs = schemaVersion >= 3 ? store.listOnlinePredictionRuns({ limit: 20 }) : [];
                     console.log(`实验: ${experiments.length}，状态 ${JSON.stringify(statusCounts)}，活动锁 ${activeLocks.length}`);
+                    console.log(`线上预测运行: ${runs.length}`);
                 }
             }
             finally {
@@ -712,6 +725,9 @@ const renderDataUsage = () => `用法:
   lotterymcp data snapshot list
   lotterymcp data snapshot inspect SNAPSHOT_ID
   lotterymcp data snapshot verify SNAPSHOT_ID
+  lotterymcp data bundle create --output DIR
+  lotterymcp data bundle verify --bundle DIR
+  lotterymcp data bundle restore --bundle DIR
   lotterymcp data backup
   lotterymcp data restore --backup FILE
   lotterymcp data gc --dry-run|--apply
@@ -1093,6 +1109,50 @@ const runDataCommand = async (argv) => {
                 store.close();
             }
         }
+        if (action === 'bundle') {
+            const bundleAction = argv[1];
+            if (!bundleAction)
+                throw new Error('data bundle 需要 create、verify 或 restore。');
+            if (bundleAction === 'create') {
+                const outputDir = getArgumentValue(argv, '--output');
+                if (!outputDir)
+                    throw new Error('data bundle create 必须提供 --output DIR。');
+                const result = await createPl3DataBundle({ dataDir, outputDir });
+                printDataValue(asJson ? result : [
+                    '排列3数据迁移 bundle 已创建。',
+                    `  目录: ${result.outputDir}`,
+                    `  数据库哈希: ${result.manifest.database.sha256}`,
+                    `  来源备份: ${result.sourceBackupPath}`,
+                ].join('\n'), asJson);
+                return 0;
+            }
+            if (bundleAction === 'verify') {
+                const bundleDir = getArgumentValue(argv, '--bundle');
+                if (!bundleDir)
+                    throw new Error('data bundle verify 必须提供 --bundle DIR。');
+                const result = await verifyPl3DataBundle(bundleDir);
+                printDataValue(asJson ? result : [
+                    `Bundle: ${result.bundleDir}`,
+                    `  校验: ${result.valid ? '通过' : '失败'}`,
+                    ...result.checks.map((item) => `  ${item.file}: ${item.valid ? 'ok' : 'failed'} ${item.actualSha256}`),
+                ].join('\n'), asJson);
+                return result.valid ? 0 : 1;
+            }
+            if (bundleAction === 'restore') {
+                const bundleDir = getArgumentValue(argv, '--bundle');
+                if (!bundleDir)
+                    throw new Error('data bundle restore 必须提供 --bundle DIR。');
+                const result = await restorePl3DataBundle({ dataDir, bundleDir });
+                printDataValue(asJson ? result : [
+                    '排列3数据迁移 bundle 已恢复。',
+                    `  数据库: ${result.databasePath}`,
+                    `  安全备份: ${result.safetyBackupPath || '无'}`,
+                    `  预测账本: ${result.ledgerRestoredPath || '未包含'}`,
+                ].join('\n'), asJson);
+                return 0;
+            }
+            throw new Error(`未知 data bundle 子命令: ${bundleAction}`);
+        }
         if (action === 'backup') {
             const result = await backupPl3Database(dataDir);
             printDataValue(asJson ? result : `排列3数据库备份完成: ${result.backupPath}`, asJson);
@@ -1167,7 +1227,7 @@ const resolveExperimentCodeCommit = () => {
         return `${commit}-dirty-${worktreeHash}`;
     }
     catch {
-        return `lotterymcp-${process.env.npm_package_version || '0.5.0'}`;
+        return `lotterymcp-${process.env.npm_package_version || '0.6.0'}`;
     }
 };
 const runExperimentCommand = async (argv) => {
@@ -1278,6 +1338,70 @@ const runExperimentCommand = async (argv) => {
         return 1;
     }
 };
+const runOpsCommand = async (argv) => {
+    if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
+        console.log(renderOpsUsage());
+        return 0;
+    }
+    const action = argv[0];
+    const asJson = argv.includes('--json');
+    const config = toResolvedConfig(await resolveConfig());
+    const dataDir = path.resolve(String(config.dataDir || '.lotterymcp-data'));
+    try {
+        if (action === 'run-once') {
+            const play = String(getArgumentValue(argv, '--play') || 'mixed').trim().toLowerCase();
+            const periods = Number(getArgumentValue(argv, '--periods') || 200);
+            const tickets = Number(getArgumentValue(argv, '--tickets') || 10);
+            const result = await runPl3DailyOnce({
+                config: { ...config, dataMode: config.dataMode || 'official', dataDir },
+                periods,
+                tickets,
+                playType: play,
+                sync: !argv.includes('--no-sync'),
+                migrate: argv.includes('--migrate'),
+                notify: !argv.includes('--no-notify'),
+            });
+            if (asJson)
+                console.log(JSON.stringify(result, null, 2));
+            else {
+                console.log('排列3每日预测闭环完成。');
+                console.log(`  Run ID: ${result.runId}`);
+                console.log(`  截止期号: ${result.prediction.afterPeriod}`);
+                console.log(`  预测 ID: ${result.prediction.predictionId}`);
+                console.log(`  报告: ${result.report.htmlPath}`);
+                console.log(`  通知: ${result.notification?.skipped ? '跳过' : '已发送'}`);
+            }
+            return 0;
+        }
+        if (action === 'serve-reports') {
+            const host = getArgumentValue(argv, '--host') || '127.0.0.1';
+            const port = Number(getArgumentValue(argv, '--port') || 4317);
+            if (!Number.isInteger(port) || port < 1 || port > 65535) {
+                throw new Error('serve-reports 的 --port 必须是 1-65535 的整数。');
+            }
+            const server = await servePl3Reports({ dataDir, host, port });
+            console.log(`排列3报告服务已启动: ${server.url}`);
+            console.log(`报告目录: ${server.reportsDir}`);
+            await new Promise(() => undefined);
+            return 0;
+        }
+        if (action === 'reports') {
+            const days = await listReportDays(dataDir);
+            if (asJson)
+                console.log(JSON.stringify({ dataDir, days }, null, 2));
+            else if (days.length === 0)
+                console.log('当前还没有排列3日报。');
+            else
+                days.forEach((day) => console.log(day));
+            return 0;
+        }
+        throw new Error(`未知 ops 子命令: ${action}`);
+    }
+    catch (error) {
+        console.error(`排列3运维操作失败: ${error instanceof Error ? error.message : String(error)}`);
+        return 1;
+    }
+};
 const runStartupMenu = async () => {
     console.log(MENU_TEXT);
     if (!canShowInteractiveMenu()) {
@@ -1359,6 +1483,9 @@ const main = async () => {
     }
     if (command === 'experiment') {
         return runExperimentCommand(args.slice(1));
+    }
+    if (command === 'ops') {
+        return runOpsCommand(args.slice(1));
     }
     console.error(`未知命令: ${command}`);
     console.log(HELP_TEXT);

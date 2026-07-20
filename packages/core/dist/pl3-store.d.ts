@@ -1,7 +1,7 @@
 import { type Pl3Record, type Pl3SourceRecord } from './pl3-prediction.js';
 export declare const PL3_DATABASE_FILENAME = "pl3.sqlite";
 export declare const PL3_DATABASE_SCHEMA_VERSION = 1;
-export declare const PL3_DATABASE_LATEST_SCHEMA_VERSION = 2;
+export declare const PL3_DATABASE_LATEST_SCHEMA_VERSION = 3;
 export type Pl3DrawStatus = 'confirmed' | 'single_source' | 'conflict';
 export type Pl3ConflictType = 'date' | 'numbers' | 'both';
 export type Pl3OfficialProvider = 'lottery-gov-cn' | 'zhcw';
@@ -175,6 +175,38 @@ export type Pl3SchemaMigrationPreview = {
         checksum: string;
     }>;
 };
+export type Pl3OperationalEventLevel = 'info' | 'warning' | 'error';
+export type Pl3OperationalEvent = {
+    eventId: number;
+    level: Pl3OperationalEventLevel;
+    eventType: string;
+    message: string;
+    details: Record<string, unknown>;
+    createdAt: string;
+};
+export type Pl3OnlinePredictionRun = {
+    runId: string;
+    predictionId: string | null;
+    status: 'running' | 'success' | 'failed';
+    dataMode: string;
+    afterPeriod: string | null;
+    targetPeriod: string | null;
+    reportPath: string | null;
+    reportHash: string | null;
+    errorMessage: string | null;
+    startedAt: string;
+    completedAt: string | null;
+};
+export type Pl3NotificationDelivery = {
+    deliveryId: number;
+    channel: string;
+    dedupeKey: string;
+    status: 'success' | 'failed';
+    target: string | null;
+    messageHash: string;
+    errorMessage: string | null;
+    deliveredAt: string;
+};
 export declare class Pl3Store {
     readonly databasePath: string;
     private readonly database;
@@ -275,6 +307,44 @@ export declare class Pl3Store {
     addExperimentAudit(experimentId: string, action: string, status: string, details?: unknown): void;
     listExperimentAudit(experimentId: string): unknown[];
     setExperimentReport(experimentId: string, reportPath: string, reportHash: string): Pl3ExperimentStorageRecord;
+    recordOnlinePredictionRun(input: {
+        runId: string;
+        predictionId?: string | null;
+        status: 'running' | 'success' | 'failed';
+        dataMode: string;
+        afterPeriod?: string | null;
+        targetPeriod?: string | null;
+        reportPath?: string | null;
+        reportHash?: string | null;
+        errorMessage?: string | null;
+        startedAt?: string;
+        completedAt?: string | null;
+    }): Pl3OnlinePredictionRun;
+    getOnlinePredictionRun(runId: string): Pl3OnlinePredictionRun | null;
+    listOnlinePredictionRuns(query?: {
+        limit?: number;
+    }): Pl3OnlinePredictionRun[];
+    private toOnlinePredictionRun;
+    recordOperationalEvent(input: {
+        level: Pl3OperationalEventLevel;
+        eventType: string;
+        message: string;
+        details?: Record<string, unknown>;
+    }): number;
+    listOperationalEvents(query?: {
+        limit?: number;
+    }): Pl3OperationalEvent[];
+    recordNotificationDelivery(input: {
+        channel: string;
+        dedupeKey: string;
+        status: 'success' | 'failed';
+        target?: string | null;
+        messageHash: string;
+        errorMessage?: string | null;
+    }): void;
+    listNotificationDeliveries(query?: {
+        limit?: number;
+    }): Pl3NotificationDelivery[];
     importLegacyPredictions(predictions: readonly Record<string, unknown>[]): number;
 }
 export declare const resolvePl3DatabasePath: (dataDir?: string) => string;

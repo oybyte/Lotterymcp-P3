@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0 - 2026-07-20
+
+- 新增 M003 线上运维 schema，记录每日预测运行、运行事件和企业微信通知投递。
+- 预测账本结算状态升级为 `pending/provisional/confirmed/disputed`；单来源开奖只做暂定复盘，不再静默当作确认事实。
+- 新增 `ops run-once`，可执行同步、结算、预测、日报生成和可选企业微信通知。
+- 新增 `ops serve-reports`，默认适配 SSH 隧道访问的本地静态报告服务。
+- 新增 `data bundle create/verify/restore`，使用 SQLite 在线备份生成可校验迁移包，避免直接拷贝 WAL 数据目录。
+- 新增 Dockerfile、Docker Compose 和环境变量示例；Compose 仅把报告端口发布到宿主机 `127.0.0.1:4317`。
+- 版本升级为 `0.6.0`，发布物和声明文件已同步。
+
 ## 0.5.0 - 2026-07-17
 
 - 新增显式 M002 migration、gzip As-of 特征快照和不可变实验注册表。

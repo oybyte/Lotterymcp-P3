@@ -111,14 +111,52 @@ test('prediction ledger upserts stable ids and settles against the next draw', a
 
   await upsertPl3Prediction(ledgerPath, prediction)
   await upsertPl3Prediction(ledgerPath, { ...prediction, generatedAt: '2026-03-01T00:00:00.000Z' })
-  assert.deepEqual(await getPl3PredictionLedgerSummary(ledgerPath), { total: 1, pending: 1, settled: 0 })
+  assert.deepEqual(await getPl3PredictionLedgerSummary(ledgerPath), {
+    total: 1,
+    pending: 1,
+    provisional: 0,
+    confirmed: 0,
+    disputed: 0,
+    settled: 0,
+  })
 
-  const next = buildRecords(1, 100)[0]
+  const next = { ...buildRecords(1, 100)[0], status: 'confirmed' }
   const settlement = await settlePl3Predictions(ledgerPath, [...records, next])
   assert.equal(settlement.settledCount, 1)
-  assert.deepEqual(await getPl3PredictionLedgerSummary(ledgerPath), { total: 1, pending: 0, settled: 1 })
+  assert.deepEqual(await getPl3PredictionLedgerSummary(ledgerPath), {
+    total: 1,
+    pending: 0,
+    provisional: 0,
+    confirmed: 1,
+    disputed: 0,
+    settled: 0,
+  })
   const saved = JSON.parse(readFileSync(ledgerPath, 'utf8'))
+  assert.equal(saved.predictions[0].settlement.status, 'confirmed')
   assert.equal(saved.predictions[0].settlement.targetPeriod, next.period)
+})
+
+test('prediction ledger uses provisional settlement for single-source draws', async () => {
+  const { getPl3PredictionLedgerSummary, predictPl3, settlePl3Predictions, upsertPl3Prediction } = await import(coreEntryUrl)
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-ledger-provisional-'))
+  const ledgerPath = path.join(tempDir, 'pl3-predictions.json')
+  const records = buildRecords(100)
+  const prediction = predictPl3(records, { tickets: 10 })
+  await upsertPl3Prediction(ledgerPath, prediction)
+
+  const next = { ...buildRecords(1, 100)[0], status: 'single_source' }
+  await settlePl3Predictions(ledgerPath, [...records, next])
+  assert.deepEqual(await getPl3PredictionLedgerSummary(ledgerPath), {
+    total: 1,
+    pending: 0,
+    provisional: 1,
+    confirmed: 0,
+    disputed: 0,
+    settled: 0,
+  })
+  const saved = JSON.parse(readFileSync(ledgerPath, 'utf8'))
+  assert.equal(saved.predictions[0].settlement.providerStatus, 'single_source')
+  assert.equal(saved.predictions[0].settlement.revisions.length, 1)
 })
 
 test('prediction ledger does not settle without the base period and rejects an active lock', async () => {

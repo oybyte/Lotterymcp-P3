@@ -159,13 +159,21 @@ export type Pl3PredictionService = {
   ledgerPath: string
   predict(query?: Pl3PredictionQuery): Promise<McpEnvelope<Pl3PredictionResult>>
   settle(): Promise<{ settledCount: number }>
-  getLedgerSummary(): Promise<{ total: number; pending: number; settled: number }>
+  getLedgerSummary(): Promise<{
+    total: number
+    pending: number
+    provisional: number
+    confirmed: number
+    disputed: number
+    settled: number
+  }>
 }
 
 export type Pl3DrawRecord = Pl3Record & {
   source?: string
   sourceUrl?: string
   rawProvider?: string
+  status?: 'confirmed' | 'single_source'
 }
 
 export type Pl3PeriodRecord = Pick<Pl3DrawRecord, 'lotteryType' | 'period' | 'drawDate'>
@@ -352,6 +360,7 @@ const normalizePl3DrawRecords = (records: readonly Pl3SourceRecord[], context: s
         ...(typeof source?.source === 'string' ? { source: source.source } : {}),
         ...(typeof source?.sourceUrl === 'string' ? { sourceUrl: source.sourceUrl } : {}),
         ...(typeof source?.rawProvider === 'string' ? { rawProvider: source.rawProvider } : {}),
+        ...(source?.status === 'confirmed' || source?.status === 'single_source' ? { status: source.status } : {}),
       }
     })
   } catch (error) {
@@ -372,6 +381,7 @@ const readOfficialCache = async (dataDir: string, lotteryType: Pl3LotteryType) =
         drawDate: record.drawDate,
         numbers: record.numbers,
         numbersList: record.numbersList,
+        status: record.status,
         source: 'official',
         sourceUrl: record.sourceUrl,
         rawProvider: record.provider,

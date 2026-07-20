@@ -1,6 +1,6 @@
 {
   "name": "lotterymcp-core",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": false,
   "type": "module",
   "description": "Core P3 data archive, As-of features, reproducible experiments, prediction, and backtesting",

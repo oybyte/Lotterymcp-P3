@@ -34,7 +34,7 @@ const createConfirmedSnapshot = async (count) => {
   return { core, dataDir, records, dataset, store }
 }
 
-test('M002 is explicit, backed up, and idempotent', async () => {
+test('schema migrations are explicit, backed up, and idempotent through M003', async () => {
   const core = await import(coreEntryUrl)
   const dataDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-m002-'))
   const store = core.openPl3Store({ dataDir })
@@ -43,18 +43,44 @@ test('M002 is explicit, backed up, and idempotent', async () => {
 
   const preview = core.previewPl3SchemaMigration(dataDir)
   assert.equal(preview.currentVersion, 1)
-  assert.equal(preview.targetVersion, 2)
+  assert.equal(preview.targetVersion, 3)
   assert.equal(preview.migrationRequired, true)
   assert.equal(preview.migrations[0].name, 'p3-experiment-foundation')
+  assert.equal(preview.migrations[1].name, 'p3-online-operations')
 
   const applied = await core.applyPl3SchemaMigration(dataDir)
   assert.equal(applied.applied, true)
-  assert.equal(applied.currentVersion, 2)
+  assert.equal(applied.currentVersion, 3)
   assert.equal(existsSync(applied.backupPath), true)
   assert.equal(existsSync(applied.replacedPath), true)
+  const migratedStore = core.openPl3Store({ dataDir })
+  try {
+    migratedStore.recordOnlinePredictionRun({
+      runId: 'run-fixture',
+      status: 'success',
+      dataMode: 'official',
+      predictionId: 'prediction-fixture',
+    })
+    migratedStore.recordOperationalEvent({
+      level: 'info',
+      eventType: 'test',
+      message: 'M003 works',
+    })
+    migratedStore.recordNotificationDelivery({
+      channel: 'enterprise-wechat',
+      dedupeKey: 'prediction-fixture',
+      status: 'success',
+      messageHash: 'hash-fixture',
+    })
+    assert.equal(migratedStore.listOnlinePredictionRuns()[0].runId, 'run-fixture')
+    assert.equal(migratedStore.listOperationalEvents()[0].eventType, 'test')
+    assert.equal(migratedStore.listNotificationDeliveries()[0].dedupeKey, 'prediction-fixture')
+  } finally {
+    migratedStore.close()
+  }
   const repeated = await core.applyPl3SchemaMigration(dataDir)
   assert.equal(repeated.applied, false)
-  assert.equal(repeated.currentVersion, 2)
+  assert.equal(repeated.currentVersion, 3)
 })
 
 test('As-of feature snapshots are deterministic and isolated from future database changes', async () => {

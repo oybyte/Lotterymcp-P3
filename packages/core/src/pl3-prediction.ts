@@ -88,7 +88,7 @@ export type Pl3BacktestResult = {
 }
 
 export type Pl3Settlement = {
-  status: 'pending' | 'settled'
+  status: 'pending' | 'provisional' | 'confirmed' | 'disputed' | 'settled'
   targetPeriod?: string
   drawDate?: string
   actualNumbers?: [number, number, number]
@@ -96,6 +96,23 @@ export type Pl3Settlement = {
   returnAmount?: number
   profit?: number
   settledAt?: string
+  providerStatus?: 'confirmed' | 'single_source' | 'unknown'
+  confirmedAt?: string
+  disputedAt?: string
+  revisions?: Pl3SettlementRevision[]
+}
+
+export type Pl3SettlementRevision = {
+  status: 'provisional' | 'confirmed' | 'disputed' | 'settled'
+  targetPeriod: string
+  drawDate: string
+  actualNumbers: [number, number, number]
+  providerStatus: 'confirmed' | 'single_source' | 'unknown'
+  winningTickets: number
+  returnAmount: number
+  profit: number
+  revisedAt: string
+  reason: string
 }
 
 export type Pl3PredictionResult = {
@@ -761,25 +778,79 @@ export const settlePl3Predictions = async (
 ) => withLedgerLock(ledgerPath, async () => {
   const ledger = await readLedger(ledgerPath)
   const records = normalizePl3Records(sourceRecords)
+  const statusByPeriod = new Map<string, 'confirmed' | 'single_source' | 'unknown'>()
+  for (const record of sourceRecords) {
+    const period = String(record?.period || '').trim()
+    const status = String((record as Record<string, unknown>)?.status || '').trim()
+    statusByPeriod.set(
+      period,
+      status === 'confirmed' || status === 'single_source' ? status : 'unknown',
+    )
+  }
   let settledCount = 0
 
   for (const prediction of ledger.predictions) {
-    if (prediction.settlement.status === 'settled') continue
+    if (prediction.settlement.status === 'confirmed') continue
     const baseIndex = records.findIndex((record) => record.period === prediction.afterPeriod)
     const target = baseIndex >= 0 ? records[baseIndex + 1] : undefined
     if (!target) continue
     const winning = prediction.tickets.filter((ticket) => ticketWins(ticket, target.numbersList))
     const returnAmount = winning.reduce((sum, ticket) => sum + prediction.payouts[ticket.playType], 0)
     const cost = prediction.tickets.length * prediction.payouts.stake
+    const providerStatus = statusByPeriod.get(target.period) || 'unknown'
+    const nextStatus = providerStatus === 'confirmed' ? 'confirmed' : 'provisional'
+    const revisedAt = new Date().toISOString()
+    const nextRevision: Pl3SettlementRevision = {
+      status: nextStatus,
+      targetPeriod: target.period,
+      drawDate: target.drawDate,
+      actualNumbers: target.numbersList,
+      providerStatus,
+      winningTickets: winning.length,
+      returnAmount: round(returnAmount, 2),
+      profit: round(returnAmount - cost, 2),
+      revisedAt,
+      reason: providerStatus === 'confirmed' ? 'confirmed-draw-observed' : 'single-source-draw-observed',
+    }
+    const previous = prediction.settlement
+    const previousNumbers = previous.actualNumbers?.join(',')
+    const nextNumbers = target.numbersList.join(',')
+    if (
+      previous.status === 'provisional' &&
+      providerStatus === 'confirmed' &&
+      previous.targetPeriod === target.period &&
+      previousNumbers &&
+      previousNumbers !== nextNumbers
+    ) {
+      prediction.settlement = {
+        ...previous,
+        status: 'disputed',
+        providerStatus,
+        disputedAt: revisedAt,
+        revisions: [
+          ...(previous.revisions || []),
+          {
+            ...nextRevision,
+            status: 'disputed',
+            reason: 'confirmed-draw-differs-from-provisional-settlement',
+          },
+        ],
+      }
+      settledCount += 1
+      continue
+    }
     prediction.settlement = {
-      status: 'settled',
+      status: nextStatus,
       targetPeriod: target.period,
       drawDate: target.drawDate,
       actualNumbers: target.numbersList,
       winningTickets: winning.length,
       returnAmount: round(returnAmount, 2),
       profit: round(returnAmount - cost, 2),
-      settledAt: new Date().toISOString(),
+      settledAt: revisedAt,
+      providerStatus,
+      ...(nextStatus === 'confirmed' ? { confirmedAt: revisedAt } : {}),
+      revisions: [...(previous.revisions || []), nextRevision],
     }
     settledCount += 1
   }
@@ -793,6 +864,9 @@ export const getPl3PredictionLedgerSummary = async (ledgerPath: string) => {
   return {
     total: ledger.predictions.length,
     pending: ledger.predictions.filter((item) => item.settlement.status === 'pending').length,
+    provisional: ledger.predictions.filter((item) => item.settlement.status === 'provisional').length,
+    confirmed: ledger.predictions.filter((item) => item.settlement.status === 'confirmed').length,
+    disputed: ledger.predictions.filter((item) => item.settlement.status === 'disputed').length,
     settled: ledger.predictions.filter((item) => item.settlement.status === 'settled').length,
   }
 }

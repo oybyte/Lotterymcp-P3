@@ -1,7 +1,7 @@
 {
   "name": "nexusbot-lottery-mcp",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Lotterymcp monorepo for P3 history, MCP access, and deterministic analysis",
   "license": "MIT",
   "homepage": "https://www.neuxsbot.com",

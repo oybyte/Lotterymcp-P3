@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js')
 const configEntryUrl = pathToFileURL(path.join(repoRoot, 'packages', 'cli', 'dist', 'config.js')).href
+const coreEntryUrl = pathToFileURL(path.join(repoRoot, 'packages', 'core', 'dist', 'index.js')).href
 
 const startJsonServer = async (handler) => {
   const server = createServer(handler)
@@ -188,7 +189,7 @@ test('official MCP snippet does not include remote credentials', async () => {
 })
 
 test('cli subcommands expose focused help without hidden aliases', async () => {
-  for (const command of ['init', 'predict', 'sync', 'doctor', 'data', 'experiment']) {
+  for (const command of ['init', 'predict', 'sync', 'doctor', 'data', 'experiment', 'ops']) {
     const result = await runCli([command, '--help'])
     assert.equal(result.status, 0, command)
     assert.match(result.stdout, /用法:/)
@@ -240,6 +241,7 @@ test('cli data migration performs explicit dry-run and side-by-side apply', asyn
   assert.equal(schemaDryRun.status, 0)
   assert.match(schemaDryRun.stdout, /当前版本: 1/)
   assert.match(schemaDryRun.stdout, /M002 p3-experiment-foundation/)
+  assert.match(schemaDryRun.stdout, /M003 p3-online-operations/)
   const schemaApplied = await runCli(['data', 'migrate', '--apply'], { env })
   assert.equal(schemaApplied.status, 0)
   assert.match(schemaApplied.stdout, /schema 迁移完成/)
@@ -525,4 +527,36 @@ test('cli predict and analyze alias use the same TypeScript pl3 engine in offici
   const rejected = await runCli(['analyze', 'fc3d'], { env })
   assert.equal(rejected.status, 1)
   assert.match(rejected.stderr, /未知参数: fc3d/)
+})
+
+test('cli ops run-once generates a local daily report from SQLite data', async () => {
+  const core = await import(coreEntryUrl)
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-ops-run-'))
+  const records = Array.from({ length: 100 }, (_, index) => ({
+    lotteryType: 'pl3',
+    period: String(27001 + index),
+    drawDate: `2026-02-${String(index % 28 + 1).padStart(2, '0')}`,
+    numbers: `${index % 10},${(index + 4) % 10},${(index + 8) % 10}`,
+  }))
+  const store = core.openPl3Store({ dataDir: tempDir })
+  store.importRecords(records, { provider: 'file-import' })
+  store.close()
+  await core.applyPl3SchemaMigration(tempDir)
+
+  const result = await runCli([
+    'ops', 'run-once', '--no-sync', '--no-notify', '--periods', '100', '--tickets', '3', '--json',
+  ], {
+    env: {
+      LOTTERYMCP_DATA_MODE: 'official',
+      LOTTERYMCP_DATA_DIR: tempDir,
+      NEUXSBOT_API_BASE_URL: '',
+      NEUXSBOT_TOKEN: '',
+    },
+  })
+
+  assert.equal(result.status, 0)
+  const payload = JSON.parse(result.stdout)
+  assert.match(payload.runId, /^p3-/)
+  assert.equal(payload.prediction.training.recordCount, 100)
+  assert.equal(existsSync(payload.report.htmlPath), true)
 })

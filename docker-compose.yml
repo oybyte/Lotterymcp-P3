@@ -1,0 +1,37 @@
+services:
+  reports:
+    build: .
+    restart: unless-stopped
+    environment:
+      LOTTERYMCP_DATA_MODE: official
+      LOTTERYMCP_DATA_DIR: /data
+      NEUXSBOT_DEFAULT_PERIODS: "200"
+    volumes:
+      - /opt/lotterymcp-p3/data:/data
+      - /opt/lotterymcp-p3/backups:/backups
+      - /opt/lotterymcp-p3/secrets:/secrets:ro
+    ports:
+      - "127.0.0.1:4317:4317"
+    command: ["node", "packages/cli/dist/index.js", "ops", "serve-reports", "--host", "0.0.0.0", "--port", "4317"]
+
+  worker:
+    build: .
+    restart: unless-stopped
+    environment:
+      LOTTERYMCP_DATA_MODE: official
+      LOTTERYMCP_DATA_DIR: /data
+      NEUXSBOT_DEFAULT_PERIODS: "200"
+      LOTTERYMCP_DAILY_INTERVAL_SECONDS: "86400"
+      LOTTERYMCP_WECHAT_WEBHOOK: ${LOTTERYMCP_WECHAT_WEBHOOK:-}
+    volumes:
+      - /opt/lotterymcp-p3/data:/data
+      - /opt/lotterymcp-p3/backups:/backups
+      - /opt/lotterymcp-p3/secrets:/secrets:ro
+    command:
+      - sh
+      - -lc
+      - |
+        while true; do
+          node packages/cli/dist/index.js ops run-once --migrate || true
+          sleep "$${LOTTERYMCP_DAILY_INTERVAL_SECONDS:-86400}"
+        done

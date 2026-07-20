@@ -1,10 +1,10 @@
 # 排列3个人研究实验室实施计划
 
-## 当前实现状态（0.5.0）
+## 当前实现状态（0.6.0）
 
-截至 2026-07-17，M001 数据档案、双来源核对、checkpoint 断点续传、冲突隔离、不可变 dataset snapshot、raw GC、M002、As-of 特征、实验注册、nested walk-forward、逐折恢复和一次性冻结评估已经实现。
+截至 2026-07-20，M001 数据档案、双来源核对、checkpoint 断点续传、冲突隔离、不可变 dataset snapshot、raw GC、M002、As-of 特征、实验注册、nested walk-forward、逐折恢复、一次性冻结评估和 M003 线上运维表已经实现。
 
-当前正式 evaluator 为 `uniform-theory`、`random-monte-carlo` 和 `weighted-frequency-v1`。逻辑回归、LightGBM、ONNX、Champion 晋级、Shadow 和 Dashboard 仍按路线图从 0.6.0 开始，不属于 0.5.0 发布物。
+当前正式 evaluator 为 `uniform-theory`、`random-monte-carlo` 和 `weighted-frequency-v1`。0.6.0 交付个人服务器每日预测闭环、静态报告、企业微信通知和数据迁移 bundle。逻辑回归、LightGBM、ONNX、Champion 晋级、Shadow 和 Web Dashboard 仍按后续路线图推进，不属于 0.6.0 发布物。
 
 真实数据仍保留 23 个未自动裁决的历史冲突。最近 2000 期可使用 confirmed snapshot；包含冲突的全历史实验继续阻塞。
 
@@ -282,11 +282,36 @@ TypeScript 校验 schema、experiment/spec/data/feature hash、文件 SHA-256 �
 - 历史开奖修订与模型训练范围相交时，将模型标记为 `stale`。
 - `stale` Challenger 禁止晋级；`stale` Champion 暂时继续服务并显示警告，直到新版本复评完成。
 
-## 8. 阶段 4：预测、Shadow 和晋级
+## 8. 阶段 4：线上预测闭环、Shadow 和晋级
+
+### 8.0 0.6.0 线上闭环
+
+0.6.0 已新增 M003 运维表：
+
+| 表 | 用途 |
+|---|---|
+| `online_prediction_runs` | 记录每日同步、预测、报告生成状态 |
+| `operational_events` | 记录运行事件、告警和失败原因 |
+| `notification_deliveries` | 记录企业微信等通知投递和去重键 |
+
+新增 CLI：
+
+```text
+lotterymcp ops run-once [--periods 200] [--tickets 10] [--play mixed] [--no-sync] [--migrate] [--no-notify]
+lotterymcp ops serve-reports [--host 127.0.0.1] [--port 4317]
+lotterymcp ops reports
+lotterymcp data bundle create --output DIR
+lotterymcp data bundle verify --bundle DIR
+lotterymcp data bundle restore --bundle DIR
+```
+
+`ops run-once` 的顺序固定为：同步 P3 数据、结算待开奖记录、生成下一期预测、写入日报、记录运行状态、发送可选企业微信通知。单来源数据只能产生 `provisional` 复盘；双官方来源一致后才升级为 `confirmed`。若确认结果与暂定复盘不一致，账本进入 `disputed` 并追加 revision。
+
+无域名服务器部署使用 Docker Compose。报告容器内监听 `0.0.0.0`，但宿主机只发布 `127.0.0.1:4317`；远程访问通过 SSH 隧道完成，不开放公网 Web。
 
 ### 8.1 M003 表结构
 
-新增 `model_artifacts`、`model_assignments`、`predictions`、`prediction_tickets`、`settlements` 和 `payout_schedules`。
+后续 Shadow 和模型晋级会新增 `model_artifacts`、`model_assignments`、`predictions`、`prediction_tickets`、`settlements` 和 `payout_schedules`。这些表属于后续 schema，不在当前 M003 中。
 
 - 模型角色变化使用带起止时间的 assignment 历史，不覆盖旧角色。
 - 预测和票据同一事务写入；不同模型对同一 `afterPeriod` 分别保存。
@@ -405,9 +430,10 @@ lotterymcp data payouts import --file FILE
 |---|---|---|
 | `0.4.0` | SQLite、全量同步、冲突、JSON 迁移 | 迁移不能稳定回滚或数据规模未知 |
 | `0.5.0` | As-of 特征、实验注册、nested walk-forward | 未来数据泄漏或结果不可复现 |
-| `0.6.0` | 五个基线、Python Challenger、artifact 推理 | 少于 2000 条可用数据时禁止正式晋级功能 |
-| `0.7.0` | Shadow、结算 revision、晋级与回滚 | 无法证明首次 observation 前生成预测 |
-| `0.8.0` | 本地 Dashboard | 前四阶段未形成稳定闭环 |
+| `0.6.0` | 服务器每日预测闭环、报告、企业微信通知、迁移 bundle、Docker | 单来源复盘被误当作 confirmed |
+| `0.7.0` | 私有 Web Dashboard、密码和 TOTP、审计 | 未完成 SSH 隧道和只读安全边界 |
+| `0.8.0` | Shadow、结算 revision 入库、晋级与回滚 | 无法证明首次 observation 前生成预测 |
+| `0.9.0` | 五个基线、Python Challenger、artifact 推理 | 少于 2000 条 confirmed 数据时禁止正式晋级功能 |
 
 每个版本必须通过：
 

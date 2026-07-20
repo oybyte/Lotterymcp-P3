@@ -10,6 +10,7 @@ const rootDir = path.resolve(import.meta.dirname, '..')
 const coreEntryUrl = pathToFileURL(path.join(rootDir, 'packages/core/dist/index.js')).href
 const dataFilesEntryUrl = pathToFileURL(path.join(rootDir, 'packages/cli/dist/data-files.js')).href
 const dataGcEntryUrl = pathToFileURL(path.join(rootDir, 'packages/cli/dist/data-gc.js')).href
+const opsEntryUrl = pathToFileURL(path.join(rootDir, 'packages/cli/dist/ops.js')).href
 
 test('JSON and CSV files use the same SQLite validation and support round-trip export', async () => {
   const { importPl3FileToStore, exportPl3Store } = await import(dataFilesEntryUrl)
@@ -68,6 +69,36 @@ test('database backup is validated and can restore a known-good snapshot', async
 
   await restorePl3Database(dataDir, backup.backupPath)
   store = openPl3Store({ dataDir, readonly: true, fileMustExist: true })
+  try {
+    assert.equal(store.getStatus().usableRecords, 1)
+    assert.equal(store.getStatus().latestPeriod, '26180')
+  } finally {
+    store.close()
+  }
+})
+
+test('data bundle creates a verified portable SQLite and ledger restore package', async () => {
+  const { openPl3Store } = await import(coreEntryUrl)
+  const { createPl3DataBundle, restorePl3DataBundle, verifyPl3DataBundle } = await import(opsEntryUrl)
+  const sourceDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-bundle-source-'))
+  const targetDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-bundle-target-'))
+  const bundleDir = path.join(sourceDir, 'bundle')
+  let store = openPl3Store({ dataDir: sourceDir })
+  store.importRecords([{
+    lotteryType: 'pl3', period: '26180', drawDate: '2026-07-01', numbers: '1,2,3',
+  }], { provider: 'file-import' })
+  store.close()
+  writeFileSync(path.join(sourceDir, 'pl3-predictions.json'), JSON.stringify({ version: 1, predictions: [] }), 'utf8')
+
+  const created = await createPl3DataBundle({ dataDir: sourceDir, outputDir: bundleDir })
+  assert.equal(existsSync(path.join(bundleDir, 'manifest.json')), true)
+  assert.equal(created.manifest.database.file, 'pl3.sqlite')
+  const verified = await verifyPl3DataBundle(bundleDir)
+  assert.equal(verified.valid, true)
+
+  const restored = await restorePl3DataBundle({ dataDir: targetDir, bundleDir })
+  assert.equal(existsSync(restored.ledgerRestoredPath), true)
+  store = openPl3Store({ dataDir: targetDir, readonly: true, fileMustExist: true })
   try {
     assert.equal(store.getStatus().usableRecords, 1)
     assert.equal(store.getStatus().latestPeriod, '26180')
