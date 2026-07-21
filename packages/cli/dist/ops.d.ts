@@ -59,8 +59,25 @@ export declare const restorePl3DataBundle: (input: {
     replacedPath: string | null;
     safetyBackupPath: string | null;
 }>;
+export type Pl3DailyReportSummary = {
+    runId: string;
+    day: string;
+    generatedAt: string;
+    predictionId: string;
+    afterPeriod: string;
+    reportPath: string;
+    markdownPath: string;
+    reportHash: string;
+    snapshotSettlement: Pl3PredictionResult['settlement'];
+};
+export type Pl3DailyReportIndex = {
+    version: 1;
+    updatedAt: string;
+    reports: Pl3DailyReportSummary[];
+};
 export declare const writePl3DailyReport: (input: {
     dataDir: string;
+    runId: string;
     prediction: Pl3PredictionResult;
     sync?: SyncOfficialPl3StoreResult;
 }) => Promise<{
@@ -69,6 +86,17 @@ export declare const writePl3DailyReport: (input: {
     markdownPath: string;
     htmlPath: string;
     reportHash: string;
+    summary: Pl3DailyReportSummary;
+}>;
+type WebAccessMode = 'tunnel' | 'public';
+export declare const createWebAuthConfig: (input: {
+    dataDir: string;
+    password: string;
+    secretPath?: string;
+}) => Promise<{
+    secretPath: string;
+    totpSecret: string;
+    recoveryCodes: string[];
 }>;
 export declare const runPl3DailyOnce: (input: {
     config: LotteryMcpConfig;
@@ -87,6 +115,7 @@ export declare const runPl3DailyOnce: (input: {
         markdownPath: string;
         htmlPath: string;
         reportHash: string;
+        summary: Pl3DailyReportSummary;
     };
     sync: SyncOfficialPl3StoreResult | undefined;
     notification: {
@@ -100,10 +129,14 @@ export declare const servePl3Reports: (input: {
     dataDir: string;
     host?: string;
     port?: number;
+    accessMode?: WebAccessMode;
 }) => Promise<{
     server: http.Server<typeof http.IncomingMessage, typeof http.ServerResponse>;
     url: string;
     reportsDir: string;
+    assetsDir: string;
+    accessMode: WebAccessMode;
 }>;
 export declare const listReportDays: (dataDir: string) => Promise<string[]>;
 export declare const getPl3DatabasePathForOps: (dataDir: string) => string;
+export {};

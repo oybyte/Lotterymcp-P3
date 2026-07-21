@@ -16,6 +16,7 @@ Lotterymcp 是一个排列3（P3）历史数据、MCP 接入和本地确定性�
 - [分析问题示例](docs/prompt-templates.zh-CN.md)
 - [排列3个人研究实验室产品方案](docs/p3-research-product-plan.zh-CN.md)
 - [私有服务器部署说明](docs/server-deployment.zh-CN.md)
+- [Web 研究台说明](docs/web-dashboard.zh-CN.md)
 
 ## 能做什么
 
@@ -29,7 +30,7 @@ Lotterymcp 是一个排列3（P3）历史数据、MCP 接入和本地确定性�
 - 按直选、组三、组六或混合玩法生成候选排序。
 - 对实际候选注数执行 walk-forward 回测，输出成本、名义奖金和历史 ROI。
 - 保存预测账本，并在下一期开奖进入缓存后按 `provisional/confirmed/disputed` 复盘。
-- 在个人服务器上每日自动同步、预测、生成静态报告并发送企业微信通知。
+- 在个人服务器上每日自动同步、预测、生成不可变日报、提供中文只读研究台并发送企业微信通知。
 
 ## 安装
 
@@ -78,6 +79,7 @@ lotterymcp data bundle create --output transfer-bundle
 lotterymcp predict --periods 200 --tickets 10 --play mixed
 lotterymcp ops run-once --migrate
 lotterymcp ops serve-reports --host 127.0.0.1 --port 4317
+lotterymcp ops auth init --password '请换成足够长的访问口令'
 ```
 
 旧版 `analyze pl3` 和 `analyze p3` 仍作为隐藏兼容入口，统一调用同一个 P3 预测核心。
@@ -210,10 +212,10 @@ lotterymcp experiment evaluate EXPERIMENT_ID --frozen --confirm
 
 ## 私有服务器部署
 
-无公网域名时推荐第一阶段使用 Docker Compose 加 SSH 隧道，不开放 80/443：
+无公网域名时推荐第一阶段使用 Docker Compose 加 SSH 隧道，不开放 80/443。报告服务现在是中文只读研究台，首页优先展示最新预测、数据可信状态和当前复盘：
 
 ```bash
-mkdir -p /opt/lotterymcp-p3/{data,secrets,backups}
+mkdir -p /opt/lotterymcp-p3/{data,secrets,backups,web-state}
 docker compose up -d --build
 docker compose exec worker npx --yes lotterymcp@latest ops run-once --migrate
 ```
@@ -225,6 +227,15 @@ ssh -N -L 4317:127.0.0.1:4317 lotterymcp@SERVER_IP
 ```
 
 浏览器打开 `http://127.0.0.1:4317/`。Compose 只把报告端口绑定到服务器 `127.0.0.1`，公网不能直接访问。
+
+公网访问需要先确认服务器公网 IP 是固定 EIP，再通过 SSH 初始化 Web 认证：
+
+```bash
+export LOTTERYMCP_WEB_AUTH_PASSWORD='请换成足够长的访问口令'
+docker compose --profile auth-admin run --rm auth-admin
+```
+
+随后把 `LOTTERYMCP_WEB_ACCESS_MODE=public` 放入 Compose 环境，并在 HTTPS 反向代理后开放访问。Web 端只读，不提供同步、预测、迁移或实验执行入口。
 
 从本机迁移数据到服务器时不要直接复制 SQLite 目录，使用可校验 bundle：
 
@@ -266,6 +277,7 @@ lotterymcp data bundle restore --bundle transfer-bundle
 
 - `NEUXSBOT_TOKEN` 环境变量优先于本地配置文件。多人机器和 CI 建议使用环境变量。
 - 默认数据目录是 `.lotterymcp-data/`，SQLite 档案为 `pl3.sqlite`，原始响应保存在 `raw/`。预测账本暂时继续使用 `pl3-predictions.json`；M003 只记录线上运行、事件和通知投递。
+- `LOTTERYMCP_WEB_ACCESS_MODE=tunnel|public` 控制研究台访问模式，默认 `tunnel`。`public` 模式还会读取 `LOTTERYMCP_WEB_STATE_DIR` 和 `LOTTERYMCP_WEB_AUTH_CONFIG`。
 - 默认单注成本为 2 元，名义奖金为直选 1040、组三 346、组六 173；可分别通过 `LOTTERYMCP_PL3_STAKE`、`LOTTERYMCP_PL3_PAYOUT_DIRECT`、`LOTTERYMCP_PL3_PAYOUT_GROUP3`、`LOTTERYMCP_PL3_PAYOUT_GROUP6` 覆盖。
 - 奖金、回报和 ROI 都是按配置计算的历史模拟，不构成收益承诺。
 

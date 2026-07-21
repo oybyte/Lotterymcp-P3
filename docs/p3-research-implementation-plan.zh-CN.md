@@ -1,10 +1,10 @@
 # 排列3个人研究实验室实施计划
 
-## 当前实现状态（0.6.0）
+## 当前实现状态（0.7.0）
 
-截至 2026-07-20，M001 数据档案、双来源核对、checkpoint 断点续传、冲突隔离、不可变 dataset snapshot、raw GC、M002、As-of 特征、实验注册、nested walk-forward、逐折恢复、一次性冻结评估和 M003 线上运维表已经实现。
+截至 2026-07-21，M001 数据档案、双来源核对、checkpoint 断点续传、冲突隔离、不可变 dataset snapshot、raw GC、M002、As-of 特征、实验注册、nested walk-forward、逐折恢复、一次性冻结评估、M003 线上运维表和中文只读 Web 研究台已经实现。
 
-当前正式 evaluator 为 `uniform-theory`、`random-monte-carlo` 和 `weighted-frequency-v1`。0.6.0 交付个人服务器每日预测闭环、静态报告、企业微信通知和数据迁移 bundle。逻辑回归、LightGBM、ONNX、Champion 晋级、Shadow 和 Web Dashboard 仍按后续路线图推进，不属于 0.6.0 发布物。
+当前正式 evaluator 为 `uniform-theory`、`random-monte-carlo` 和 `weighted-frequency-v1`。0.7.0 交付个人服务器每日预测闭环、不可变日报、中文只读研究台、Web 认证、企业微信通知和数据迁移 bundle。逻辑回归、LightGBM、ONNX、Champion 晋级和 Shadow 仍按后续路线图推进，不属于 0.7.0 发布物。
 
 真实数据仍保留 23 个未自动裁决的历史冲突。最近 2000 期可使用 confirmed snapshot；包含冲突的全历史实验继续阻塞。
 
@@ -24,7 +24,7 @@
 - 初始 Champion 固定为 `weighted-frequency-v1`；专有模型全部从 Challenger 开始。
 - 排序同分时按 `000-999` 数值升序处理，保证跨环境确定性。
 - 对象使用键排序的规范化 JSON 计算 SHA-256；时间保存为 UTC ISO 8601，开奖日保存为 `YYYY-MM-DD`。
-- Dashboard 最后实施，不先于数据、实验、模型和 Shadow 闭环。
+- Web 研究台已在数据、实验和线上预测闭环之后实现，保持只读边界；Shadow 和 Champion 晋级继续通过 CLI 推进。
 
 ## 3. 必须先修正的产品口径
 
@@ -375,14 +375,15 @@ lotterymcp data payouts import --file FILE
 - `remote` 模式继续可用，但 remote observation 不作为第二独立官方来源自动确认真值。
 - 保留现有 analyze、`sync --all`、旧命名和 `NBCP_*` 薄兼容入口，不扩展第二套实现。
 
-## 10. 阶段 5：本地 Dashboard
+## 10. 阶段 5：Web 研究台
 
-- 使用私有 React/Vite 应用和小型 TypeScript 只读 API。
-- 命令固定为 `lotterymcp dashboard --port 4317`，只监听 `127.0.0.1`。
-- 禁止开放 CORS、远程监听、账号和外部 CDN。
-- 提供数据健康、实验、模型对比、下一期预测、账本结算五个视图。
+- `0.7.0` 使用私有 React/Vite 应用和小型 TypeScript 只读 API，静态产物随 CLI 发布到 `packages/cli/dist/web/`。
+- 命令为 `lotterymcp ops serve-reports --host 127.0.0.1 --port 4317`，默认 `LOTTERYMCP_WEB_ACCESS_MODE=tunnel`。
+- tunnel 模式不启用 Web 登录，适合 SSH 隧道；public 模式必须先执行 `ops auth init`，并放在 HTTPS 反向代理之后。
+- 提供总览、历史日报、回测分析、数据质量和运行状态五个视图。
+- 只读 API 包含 `/healthz`、`/readyz`、`/api/v1/session`、`/api/v1/overview`、`/api/v1/reports`、`/api/v1/reports/:runId` 和 `/api/v1/operations`。
 - 实验、训练、冲突处理、晋级和回滚仍通过 CLI 执行。
-- Dashboard 静态产物可随 CLI 发布；Python、数据库、raw、reports 和 models 不得进入 tarball。
+- Python、数据库、raw、reports、models、web-state 和 secrets 不得进入 tarball。
 
 ## 11. 测试矩阵
 
@@ -431,7 +432,7 @@ lotterymcp data payouts import --file FILE
 | `0.4.0` | SQLite、全量同步、冲突、JSON 迁移 | 迁移不能稳定回滚或数据规模未知 |
 | `0.5.0` | As-of 特征、实验注册、nested walk-forward | 未来数据泄漏或结果不可复现 |
 | `0.6.0` | 服务器每日预测闭环、报告、企业微信通知、迁移 bundle、Docker | 单来源复盘被误当作 confirmed |
-| `0.7.0` | 私有 Web Dashboard、密码和 TOTP、审计 | 未完成 SSH 隧道和只读安全边界 |
+| `0.7.0` | 中文只读 Web 研究台、密码和 TOTP、审计 | public 模式未配置 HTTPS 或固定 EIP |
 | `0.8.0` | Shadow、结算 revision 入库、晋级与回滚 | 无法证明首次 observation 前生成预测 |
 | `0.9.0` | 五个基线、Python Challenger、artifact 推理 | 少于 2000 条 confirmed 数据时禁止正式晋级功能 |
 

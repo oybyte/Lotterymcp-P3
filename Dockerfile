@@ -15,6 +15,7 @@ COPY packages/core/package.json packages/core/package.json
 COPY packages/mcp-server/package.json packages/mcp-server/package.json
 COPY packages/cli/package.json packages/cli/package.json
 COPY packages/nbcp/package.json packages/nbcp/package.json
+COPY packages/web/package.json packages/web/package.json
 
 RUN npm config set registry https://registry.npmmirror.com
 RUN npm ci

@@ -30,7 +30,7 @@ test('publishable packages expose registry metadata and cli package includes a R
 
   for (const packageDir of packageDirs) {
     const manifest = readJson(path.join('packages', packageDir, 'package.json'))
-    assert.equal(manifest.version, '0.6.0')
+    assert.equal(manifest.version, '0.7.0')
     assert.equal(manifest.private, false)
     assert.equal(manifest.publishConfig?.access, 'public')
     assert.equal(manifest.license, 'MIT')
@@ -67,6 +67,7 @@ test('published cli is TypeScript-only and ships the P3 sync implementation', ()
 
   assert.deepEqual(cliPackage.files, ['dist', 'README.md'])
   assert.equal(existsSync(path.join(repoRoot, 'packages', 'cli', 'dist', 'official-sync.js')), true)
+  assert.equal(existsSync(path.join(repoRoot, 'packages', 'cli', 'dist', 'web', 'index.html')), true)
 })
 
 test('public docs stay product-facing and do not expose internal conversation wording', () => {

@@ -18,6 +18,7 @@ lotterymcp experiment run EXPERIMENT_ID
 lotterymcp predict --periods 200 --tickets 10 --play mixed
 lotterymcp ops run-once --migrate
 lotterymcp ops serve-reports --host 127.0.0.1 --port 4317
+lotterymcp ops auth init --password '请换成足够长的访问口令'
 lotterymcp serve
 ```
 
@@ -29,7 +30,7 @@ remote 模式继续使用 `NEUXSBOT_API_BASE_URL` 和 `NEUXSBOT_TOKEN`。设置 
 
 `data bundle create/verify/restore` 用于在本机和服务器之间迁移数据，内部使用 SQLite 在线备份，不直接复制 WAL 数据目录。
 
-`ops run-once` 会同步 P3 数据、结算、预测、生成日报并可发送企业微信通知；`ops serve-reports` 默认适合 SSH 隧道访问。
+`ops run-once` 会同步 P3 数据、结算、预测、生成不可变日报并可发送企业微信通知；`ops serve-reports` 提供中文只读研究台，默认适合 SSH 隧道访问。公网模式需先用 `ops auth init` 初始化口令、TOTP 和恢复码，并放在 HTTPS 反向代理之后。
 
 正式实验只接受 confirmed dataset snapshot。冻结区必须通过 `experiment evaluate EXPERIMENT_ID --frozen --confirm` 显式解封，且每个实验只允许尝试一次。
 

@@ -49,6 +49,7 @@ import { applyPl3RawGcPlan, createPl3RawGcPlan } from './data-gc.js'
 import { syncOfficialFile, syncOfficialPl3, syncOfficialPl3ToStore } from './official-sync.js'
 import {
   createPl3DataBundle,
+  createWebAuthConfig,
   listReportDays,
   restorePl3DataBundle,
   runPl3DailyOnce,
@@ -159,11 +160,13 @@ const renderExperimentUsage = () => `用法:
 
 const renderOpsUsage = () => `用法:
   lotterymcp ops run-once [--periods 200] [--tickets 10] [--play mixed] [--no-sync] [--migrate] [--no-notify] [--json]
-  lotterymcp ops serve-reports [--host 127.0.0.1] [--port 4317]
+  lotterymcp ops serve-reports [--host 127.0.0.1] [--port 4317] [--access-mode tunnel|public]
   lotterymcp ops reports [--json]
+  lotterymcp ops auth init --password PASSWORD [--json]
 
 说明:
   serve-reports 默认只监听 127.0.0.1，适合通过 SSH 隧道远程访问。
+  public 模式必须先通过 SSH 执行 auth init，并建议放在 HTTPS 反向代理之后。
   run-once 会同步 P3 数据、结算待预测、生成新预测和静态报告。
 `
 
@@ -1343,7 +1346,7 @@ const resolveExperimentCodeCommit = () => {
     const worktreeHash = createHash('sha256').update(diff).update(untracked).digest('hex').slice(0, 16)
     return `${commit}-dirty-${worktreeHash}`
   } catch {
-    return `lotterymcp-${process.env.npm_package_version || '0.6.0'}`
+    return `lotterymcp-${process.env.npm_package_version || '0.7.0'}`
   }
 }
 
@@ -1496,13 +1499,37 @@ const runOpsCommand = async (argv: string[]) => {
     if (action === 'serve-reports') {
       const host = getArgumentValue(argv, '--host') || '127.0.0.1'
       const port = Number(getArgumentValue(argv, '--port') || 4317)
+      const accessMode = String(getArgumentValue(argv, '--access-mode') || process.env.LOTTERYMCP_WEB_ACCESS_MODE || 'tunnel').trim().toLowerCase()
+      if (accessMode !== 'tunnel' && accessMode !== 'public') {
+        throw new Error('serve-reports 的 --access-mode 只支持 tunnel 或 public。')
+      }
       if (!Number.isInteger(port) || port < 1 || port > 65535) {
         throw new Error('serve-reports 的 --port 必须是 1-65535 的整数。')
       }
-      const server = await servePl3Reports({ dataDir, host, port })
+      const server = await servePl3Reports({ dataDir, host, port, accessMode })
       console.log(`排列3报告服务已启动: ${server.url}`)
       console.log(`报告目录: ${server.reportsDir}`)
+      console.log(`访问模式: ${server.accessMode}`)
       await new Promise(() => undefined)
+      return 0
+    }
+
+    if (action === 'auth') {
+      const authAction = argv[1]
+      if (authAction !== 'init' && authAction !== 'reset') {
+        throw new Error('ops auth 只支持 init 或 reset。')
+      }
+      const password = getArgumentValue(argv, '--password') || process.env.LOTTERYMCP_WEB_AUTH_PASSWORD
+      if (!password) throw new Error('ops auth init 需要 --password 或 LOTTERYMCP_WEB_AUTH_PASSWORD。')
+      const result = await createWebAuthConfig({ dataDir, password })
+      if (asJson) console.log(JSON.stringify(result, null, 2))
+      else {
+        console.log('Web 认证已初始化。')
+        console.log(`  配置文件: ${result.secretPath}`)
+        console.log(`  TOTP Secret: ${result.totpSecret}`)
+        console.log('  恢复码:')
+        result.recoveryCodes.forEach((code) => console.log(`    ${code}`))
+      }
       return 0
     }
 

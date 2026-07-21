@@ -5,10 +5,13 @@ services:
     environment:
       LOTTERYMCP_DATA_MODE: official
       LOTTERYMCP_DATA_DIR: /data
+      LOTTERYMCP_WEB_ACCESS_MODE: ${LOTTERYMCP_WEB_ACCESS_MODE:-tunnel}
+      LOTTERYMCP_WEB_STATE_DIR: /web-state
+      LOTTERYMCP_WEB_AUTH_CONFIG: /secrets/web-auth.json
       NEUXSBOT_DEFAULT_PERIODS: "200"
     volumes:
-      - /opt/lotterymcp-p3/data:/data
-      - /opt/lotterymcp-p3/backups:/backups
+      - /opt/lotterymcp-p3/data:/data:ro
+      - /opt/lotterymcp-p3/web-state:/web-state
       - /opt/lotterymcp-p3/secrets:/secrets:ro
     ports:
       - "127.0.0.1:4317:4317"
@@ -26,7 +29,6 @@ services:
     volumes:
       - /opt/lotterymcp-p3/data:/data
       - /opt/lotterymcp-p3/backups:/backups
-      - /opt/lotterymcp-p3/secrets:/secrets:ro
     command:
       - sh
       - -lc
@@ -35,3 +37,15 @@ services:
           node packages/cli/dist/index.js ops run-once --migrate || true
           sleep "$${LOTTERYMCP_DAILY_INTERVAL_SECONDS:-86400}"
         done
+
+  auth-admin:
+    build: .
+    profiles: ["auth-admin"]
+    environment:
+      LOTTERYMCP_DATA_DIR: /data
+      LOTTERYMCP_WEB_AUTH_CONFIG: /secrets/web-auth.json
+      LOTTERYMCP_WEB_AUTH_PASSWORD: ${LOTTERYMCP_WEB_AUTH_PASSWORD:?set LOTTERYMCP_WEB_AUTH_PASSWORD}
+    volumes:
+      - /opt/lotterymcp-p3/data:/data:ro
+      - /opt/lotterymcp-p3/secrets:/secrets
+    command: ["node", "packages/cli/dist/index.js", "ops", "auth", "init"]

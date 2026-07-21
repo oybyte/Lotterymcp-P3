@@ -11,6 +11,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js')
 const configEntryUrl = pathToFileURL(path.join(repoRoot, 'packages', 'cli', 'dist', 'config.js')).href
 const coreEntryUrl = pathToFileURL(path.join(repoRoot, 'packages', 'core', 'dist', 'index.js')).href
+const opsEntryUrl = pathToFileURL(path.join(repoRoot, 'packages', 'cli', 'dist', 'ops.js')).href
 
 const startJsonServer = async (handler) => {
   const server = createServer(handler)
@@ -24,6 +25,15 @@ const startJsonServer = async (handler) => {
       await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
     },
   }
+}
+
+const getFreePort = async () => {
+  const server = createServer()
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  const port = address.port
+  await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+  return port
 }
 
 const runCli = (args, options = {}) =>
@@ -559,4 +569,49 @@ test('cli ops run-once generates a local daily report from SQLite data', async (
   assert.match(payload.runId, /^p3-/)
   assert.equal(payload.prediction.training.recordCount, 100)
   assert.equal(existsSync(payload.report.htmlPath), true)
+  assert.match(payload.report.reportPath, /reports[\\/]daily[\\/]2026-|reports[\\/]daily[\\/]\d{4}-\d{2}-\d{2}/)
+  assert.equal(existsSync(path.join(tempDir, 'reports', 'index.json')), true)
+  assert.equal(existsSync(path.join(tempDir, 'reports', 'latest.json')), true)
+})
+
+test('ops report server serves SPA assets and read-only overview API', async () => {
+  const core = await import(coreEntryUrl)
+  const ops = await import(opsEntryUrl)
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-web-api-'))
+  const records = Array.from({ length: 100 }, (_, index) => ({
+    lotteryType: 'pl3',
+    period: String(28001 + index),
+    drawDate: `2026-03-${String(index % 28 + 1).padStart(2, '0')}`,
+    numbers: `${index % 10},${(index + 2) % 10},${(index + 5) % 10}`,
+  }))
+  const store = core.openPl3Store({ dataDir: tempDir })
+  store.importRecords(records, { provider: 'file-import' })
+  store.close()
+  await core.applyPl3SchemaMigration(tempDir)
+
+  const run = await ops.runPl3DailyOnce({
+    config: { dataMode: 'official', dataDir: tempDir, apiBaseUrl: '', token: '', defaultPeriods: '200' },
+    periods: 100,
+    tickets: 3,
+    playType: 'mixed',
+    sync: false,
+    notify: false,
+  })
+  const port = await getFreePort()
+  const served = await ops.servePl3Reports({ dataDir: tempDir, host: '127.0.0.1', port })
+  try {
+    const home = await fetch(`http://127.0.0.1:${port}/`)
+    assert.equal(home.status, 200)
+    assert.match(await home.text(), /Lotterymcp/)
+    const overview = await fetch(`http://127.0.0.1:${port}/api/v1/overview`).then((response) => response.json())
+    assert.equal(overview.data.data.usableRecords, 100)
+    assert.equal(overview.data.latestReport.runId, run.runId)
+    assert.equal(overview.data.latestPrediction.predictionId, run.prediction.predictionId)
+    const reports = await fetch(`http://127.0.0.1:${port}/api/v1/reports?limit=5`).then((response) => response.json())
+    assert.equal(reports.data.reports[0].runId, run.runId)
+    const detail = await fetch(`http://127.0.0.1:${port}/api/v1/reports/${encodeURIComponent(run.runId)}`).then((response) => response.json())
+    assert.match(detail.data.markdown, /Run ID:/)
+  } finally {
+    await new Promise((resolve, reject) => served.server.close((error) => (error ? reject(error) : resolve())))
+  }
 })

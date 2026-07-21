@@ -1,13 +1,13 @@
 # Lotterymcp P3 私有服务器部署说明
 
-本文面向个人研究服务器。第一阶段不要求公网域名，不开放 Web 到公网，通过 SSH 隧道访问本地报告。
+本文面向个人研究服务器。第一阶段不要求公网域名，不开放 Web 到公网，通过 SSH 隧道访问中文只读研究台。
 
 ## 1. 服务器准备
 
 推荐目录：
 
 ```bash
-sudo mkdir -p /opt/lotterymcp-p3/{app,data,secrets,backups}
+sudo mkdir -p /opt/lotterymcp-p3/{app,data,secrets,backups,web-state}
 sudo chown -R lotterymcp:lotterymcp /opt/lotterymcp-p3
 ```
 
@@ -50,9 +50,9 @@ docker compose exec worker node packages/cli/dist/index.js data status
 docker compose exec worker node packages/cli/dist/index.js ops run-once --migrate
 ```
 
-Compose 只发布宿主机 `127.0.0.1:4317`，公网无法直接访问报告服务。
+Compose 默认只发布宿主机 `127.0.0.1:4317`，公网无法直接访问报告服务。reports 容器只读挂载 P3 数据目录，Web 登录状态单独写入 `/opt/lotterymcp-p3/web-state`。
 
-## 4. 远程访问报告
+## 4. 远程访问研究台
 
 本机打开 SSH 隧道：
 
@@ -70,7 +70,30 @@ ssh -i C:\Users\lcz\.ssh\codex5.6.pem `
 http://127.0.0.1:4317/
 ```
 
-## 5. 企业微信通知
+研究台包含总览、历史日报、回测分析、数据质量和运行状态。页面只读取 `/api/v1/*`，不提供同步、预测、迁移或实验执行按钮。
+
+## 5. 公网访问准备
+
+只有确认阿里云公网 IP 已转为固定 EIP 后，才建议开放公网入口。公网模式必须先初始化 Web 认证：
+
+```bash
+cd /opt/lotterymcp-p3/app
+export LOTTERYMCP_WEB_AUTH_PASSWORD='请换成足够长的访问口令'
+docker compose --profile auth-admin run --rm auth-admin
+```
+
+命令会输出 TOTP Secret 和 10 个一次性恢复码。TOTP Secret 加入认证器应用，恢复码离线保存。认证配置写入 `/opt/lotterymcp-p3/secrets/web-auth.json`，会话、限流和审计写入 `/opt/lotterymcp-p3/web-state/web-auth.sqlite`。
+
+随后设置：
+
+```bash
+export LOTTERYMCP_WEB_ACCESS_MODE=public
+docker compose up -d reports
+```
+
+公网模式应放在 HTTPS 反向代理之后。没有固定 EIP 或 HTTPS 证书前，继续使用 SSH 隧道。
+
+## 6. 企业微信通知
 
 在服务器 shell 或 Compose `.env` 设置：
 
@@ -81,14 +104,14 @@ docker compose up -d
 
 Webhook、云厂商 AccessKey、备份加密密钥不要提交到 Git。
 
-## 6. 数据策略
+## 7. 数据策略
 
 - 普通每日预测允许使用 `single_source` 数据，但复盘状态只能是 `provisional`。
 - 双官方来源一致后，复盘才升级为 `confirmed`。
 - 确认值与暂定值不一致时进入 `disputed`，需要人工核验。
 - confirmatory 实验、Shadow 计数和模型晋级只允许使用 confirmed 数据。
 
-## 7. 日常操作
+## 8. 日常操作
 
 查看状态：
 

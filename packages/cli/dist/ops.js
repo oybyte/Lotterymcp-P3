@@ -1,9 +1,12 @@
-import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { existsSync, mkdirSync } from 'node:fs';
 import { copyFile, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
 import { applyPl3SchemaMigration, backupPl3Database, createLotteryMcpClient, createPl3PredictionService, hasPl3Database, openPl3Store, previewPl3SchemaMigration, resolvePl3DatabasePath, restorePl3Database, writeJsonAtomically, } from 'lotterymcp-core';
+import { MCP_SERVER_TOOLS } from 'lotterymcp-server';
 import { syncOfficialPl3ToStore } from './official-sync.js';
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const safeRelativePath = (value) => {
@@ -26,6 +29,33 @@ const atomicWriteText = async (targetPath, text) => {
     await writeFile(temporaryPath, text, 'utf8');
     await rename(temporaryPath, targetPath);
 };
+const beijingFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+});
+const toBeijingDay = (date = new Date()) => beijingFormatter.format(date);
+const canonicalize = (value) => {
+    if (value === undefined)
+        return 'null';
+    if (value === null || typeof value !== 'object')
+        return JSON.stringify(value);
+    if (Array.isArray(value))
+        return `[${value.map((item) => canonicalize(item)).join(',')}]`;
+    return `{${Object.entries(value)
+        .filter(([, item]) => item !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => `${JSON.stringify(key)}:${canonicalize(item)}`)
+        .join(',')}}`;
+};
+const readJsonIfExists = async (filePath, fallback) => {
+    if (!existsSync(filePath))
+        return fallback;
+    return JSON.parse(await readFile(filePath, 'utf8'));
+};
+const base64Url = (buffer) => buffer.toString('base64').replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+const webAssetsDir = () => path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'web');
 export const createPl3DataBundle = async (input) => {
     const dataDir = path.resolve(input.dataDir);
     if (!hasPl3Database(dataDir))
@@ -117,6 +147,7 @@ export const restorePl3DataBundle = async (input) => {
 const renderMarkdownReport = (input) => [
     '# Lotterymcp P3 Daily Report',
     '',
+    `Run ID: ${input.runId}`,
     `Generated at: ${input.generatedAt}`,
     `After period: ${input.prediction.afterPeriod}`,
     `Prediction ID: ${input.prediction.predictionId}`,
@@ -144,6 +175,28 @@ const renderMarkdownReport = (input) => [
     ] : []),
     '',
 ].join('\n');
+const reportsRoot = (dataDir) => path.join(path.resolve(dataDir), 'reports');
+const reportIndexPath = (dataDir) => path.join(reportsRoot(dataDir), 'index.json');
+const latestReportPath = (dataDir) => path.join(reportsRoot(dataDir), 'latest.json');
+const upsertReportIndex = async (dataDir, summary) => {
+    const index = await readJsonIfExists(reportIndexPath(dataDir), {
+        version: 1,
+        updatedAt: summary.generatedAt,
+        reports: [],
+    });
+    const reports = [
+        summary,
+        ...index.reports.filter((item) => item.runId !== summary.runId),
+    ].sort((left, right) => right.generatedAt.localeCompare(left.generatedAt));
+    const nextIndex = {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        reports,
+    };
+    await writeJsonAtomically(reportIndexPath(dataDir), nextIndex);
+    await writeJsonAtomically(latestReportPath(dataDir), summary);
+    return nextIndex;
+};
 const renderHtmlReport = (markdown) => {
     const escaped = markdown
         .replaceAll('&', '&amp;')
@@ -167,10 +220,11 @@ const renderHtmlReport = (markdown) => {
 };
 export const writePl3DailyReport = async (input) => {
     const generatedAt = new Date().toISOString();
-    const day = generatedAt.slice(0, 10);
-    const reportDir = path.join(path.resolve(input.dataDir), 'reports', 'daily', day);
-    const markdown = renderMarkdownReport({ generatedAt, prediction: input.prediction, sync: input.sync });
+    const day = toBeijingDay(new Date(generatedAt));
+    const reportDir = path.join(reportsRoot(input.dataDir), 'daily', day, input.runId);
+    const markdown = renderMarkdownReport({ generatedAt, runId: input.runId, prediction: input.prediction, sync: input.sync });
     const payload = {
+        runId: input.runId,
         generatedAt,
         prediction: input.prediction,
         sync: input.sync ? {
@@ -186,9 +240,27 @@ export const writePl3DailyReport = async (input) => {
     await atomicWriteText(path.join(reportDir, 'report.md'), markdown);
     await writeJsonAtomically(path.join(reportDir, 'report.json'), payload);
     await atomicWriteText(path.join(reportDir, 'index.html'), renderHtmlReport(markdown));
-    await atomicWriteText(path.join(path.resolve(input.dataDir), 'reports', 'index.html'), renderHtmlReport(markdown));
-    const reportHash = sha256(JSON.stringify(payload));
-    return { reportDir, reportPath: path.join(reportDir, 'report.json'), markdownPath: path.join(reportDir, 'report.md'), htmlPath: path.join(reportDir, 'index.html'), reportHash };
+    const reportHash = sha256(canonicalize(payload));
+    const summary = {
+        runId: input.runId,
+        day,
+        generatedAt,
+        predictionId: input.prediction.predictionId,
+        afterPeriod: input.prediction.afterPeriod,
+        reportPath: path.relative(reportsRoot(input.dataDir), path.join(reportDir, 'report.json')).replaceAll('\\', '/'),
+        markdownPath: path.relative(reportsRoot(input.dataDir), path.join(reportDir, 'report.md')).replaceAll('\\', '/'),
+        reportHash,
+        snapshotSettlement: input.prediction.settlement,
+    };
+    await upsertReportIndex(input.dataDir, summary);
+    return {
+        reportDir,
+        reportPath: path.join(reportDir, 'report.json'),
+        markdownPath: path.join(reportDir, 'report.md'),
+        htmlPath: path.join(reportDir, 'index.html'),
+        reportHash,
+        summary,
+    };
 };
 const sendEnterpriseWechat = async (input) => {
     const webhookUrl = input.webhookUrl || process.env.LOTTERYMCP_WECHAT_WEBHOOK || process.env.WECOM_BOT_WEBHOOK;
@@ -222,6 +294,247 @@ const sendEnterpriseWechat = async (input) => {
     if (!ok)
         throw new Error(`企业微信通知失败: HTTP ${response.status} ${rawText.slice(0, 200)}`);
     return { skipped: false, channel: 'enterprise-wechat' };
+};
+const resolveWebAccessMode = (value) => String(value || process.env.LOTTERYMCP_WEB_ACCESS_MODE || 'tunnel').trim().toLowerCase() === 'public'
+    ? 'public'
+    : 'tunnel';
+const resolveWebStateDir = (dataDir) => path.resolve(process.env.LOTTERYMCP_WEB_STATE_DIR || path.join(path.dirname(path.resolve(dataDir)), 'web-state'));
+const resolveWebSecretPath = (dataDir) => path.resolve(process.env.LOTTERYMCP_WEB_AUTH_CONFIG || path.join(path.dirname(path.resolve(dataDir)), 'secrets', 'web-auth.json'));
+const hashPassword = (password, salt = randomBytes(16).toString('hex')) => ({
+    salt,
+    hash: scryptSync(password, salt, 32, { N: 32768, r: 8, p: 1 }).toString('hex'),
+});
+const verifyHash = (actualHex, expectedHex) => {
+    const actual = Buffer.from(actualHex, 'hex');
+    const expected = Buffer.from(expectedHex, 'hex');
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+};
+const base32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+const toBase32 = (buffer) => {
+    let bits = '';
+    let output = '';
+    for (const byte of buffer)
+        bits += byte.toString(2).padStart(8, '0');
+    for (let index = 0; index < bits.length; index += 5) {
+        const chunk = bits.slice(index, index + 5).padEnd(5, '0');
+        output += base32Alphabet[parseInt(chunk, 2)];
+    }
+    return output;
+};
+const fromBase32 = (value) => {
+    const clean = value.replaceAll('=', '').replace(/\s+/g, '').toUpperCase();
+    let bits = '';
+    for (const char of clean) {
+        const index = base32Alphabet.indexOf(char);
+        if (index < 0)
+            throw new Error('TOTP secret 格式无效。');
+        bits += index.toString(2).padStart(5, '0');
+    }
+    const bytes = [];
+    for (let index = 0; index + 8 <= bits.length; index += 8) {
+        bytes.push(parseInt(bits.slice(index, index + 8), 2));
+    }
+    return Buffer.from(bytes);
+};
+const generateTotp = (secret, step = Math.floor(Date.now() / 30000)) => {
+    const counter = Buffer.alloc(8);
+    counter.writeBigUInt64BE(BigInt(step));
+    const hmac = createHmac('sha1', fromBase32(secret)).update(counter).digest();
+    const offset = hmac[hmac.length - 1] & 0xf;
+    const binary = ((hmac[offset] & 0x7f) << 24)
+        | (hmac[offset + 1] << 16)
+        | (hmac[offset + 2] << 8)
+        | hmac[offset + 3];
+    return String(binary % 1_000_000).padStart(6, '0');
+};
+const createWebAuthDatabase = (webStateDir) => {
+    mkdirSync(webStateDir, { recursive: true });
+    const database = new Database(path.join(webStateDir, 'web-auth.sqlite'));
+    database.pragma('journal_mode = WAL');
+    database.pragma('busy_timeout = 2000');
+    database.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      session_id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      absolute_expires_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS login_attempts (
+      ip TEXT PRIMARY KEY,
+      failed_count INTEGER NOT NULL,
+      last_failed_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS totp_replay (
+      code_step TEXT PRIMARY KEY,
+      used_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS auth_audit (
+      audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_type TEXT NOT NULL,
+      ip TEXT,
+      details_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+  `);
+    return database;
+};
+export const createWebAuthConfig = async (input) => {
+    if (input.password.length < 10)
+        throw new Error('Web 访问口令至少需要 10 个字符。');
+    const secretPath = path.resolve(input.secretPath || resolveWebSecretPath(input.dataDir));
+    const password = hashPassword(input.password);
+    const recoveryCodes = Array.from({ length: 10 }, () => base64Url(randomBytes(10)));
+    const config = {
+        passwordHash: password.hash,
+        passwordSalt: password.salt,
+        totpSecret: toBase32(randomBytes(20)),
+        recoveryCodeHashes: recoveryCodes.map((code) => sha256(code)),
+        createdAt: new Date().toISOString(),
+    };
+    await mkdir(path.dirname(secretPath), { recursive: true });
+    await writeJsonAtomically(secretPath, config);
+    return { secretPath, totpSecret: config.totpSecret, recoveryCodes };
+};
+const loadWebAuthConfig = async (dataDir) => readJsonIfExists(resolveWebSecretPath(dataDir), null);
+const parseCookies = (header) => Object.fromEntries(String(header || '').split(';').map((item) => {
+    const [key, ...rest] = item.trim().split('=');
+    return [key, decodeURIComponent(rest.join('='))];
+}).filter(([key]) => key));
+const readRequestJson = async (request) => {
+    const chunks = [];
+    for await (const chunk of request)
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const body = Buffer.concat(chunks).toString('utf8');
+    return body ? JSON.parse(body) : {};
+};
+const sendJson = (response, statusCode, data, meta = {}) => {
+    response.writeHead(statusCode, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+    });
+    response.end(JSON.stringify({ data, meta }));
+};
+const sendText = (response, statusCode, text) => {
+    response.writeHead(statusCode, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+    response.end(text);
+};
+const getCurrentSettlement = async (dataDir, predictionId) => {
+    if (!predictionId)
+        return null;
+    const ledgerPath = path.join(path.resolve(dataDir), 'pl3-predictions.json');
+    const ledger = await readJsonIfExists(ledgerPath, { version: 1, predictions: [] });
+    return ledger.predictions.find((item) => item.predictionId === predictionId)?.settlement || null;
+};
+const listDailyReports = async (dataDir, limit = 20) => {
+    const index = await readJsonIfExists(reportIndexPath(dataDir), {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        reports: [],
+    });
+    return index.reports.slice(0, Math.max(1, Math.min(100, limit)));
+};
+const readReportDetail = async (dataDir, runId) => {
+    const reports = await listDailyReports(dataDir, 100);
+    const summary = reports.find((item) => item.runId === runId);
+    if (!summary)
+        return null;
+    const reportRoot = reportsRoot(dataDir);
+    const reportPath = path.resolve(reportRoot, safeRelativePath(summary.reportPath));
+    const markdownPath = path.resolve(reportRoot, safeRelativePath(summary.markdownPath));
+    if (!reportPath.startsWith(path.resolve(reportRoot)) || !markdownPath.startsWith(path.resolve(reportRoot))) {
+        throw new Error('日报路径越界。');
+    }
+    const payload = JSON.parse(await readFile(reportPath, 'utf8'));
+    const markdown = await readFile(markdownPath, 'utf8');
+    return {
+        summary,
+        payload,
+        markdown,
+        currentSettlement: await getCurrentSettlement(dataDir, payload.prediction.predictionId),
+    };
+};
+const createWebSessionManager = async (input) => {
+    const authRequired = input.accessMode === 'public';
+    const webStateDir = resolveWebStateDir(input.dataDir);
+    const database = createWebAuthDatabase(webStateDir);
+    const config = authRequired ? await loadWebAuthConfig(input.dataDir) : null;
+    if (authRequired && !config)
+        throw new Error(`公网模式必须先初始化 Web 认证: ${resolveWebSecretPath(input.dataDir)}`);
+    const audit = (eventType, ip, details = {}) => {
+        database.prepare('INSERT INTO auth_audit(event_type, ip, details_json, created_at) VALUES (?, ?, ?, ?)')
+            .run(eventType, ip, canonicalize(details), new Date().toISOString());
+    };
+    const getSession = (request) => {
+        if (!authRequired)
+            return { authenticated: true };
+        const sessionId = parseCookies(request.headers.cookie).lotterymcp_session;
+        if (!sessionId)
+            return { authenticated: false };
+        const now = new Date().toISOString();
+        const row = database.prepare(`
+      SELECT * FROM sessions WHERE session_id = ?
+        AND expires_at > ? AND absolute_expires_at > ?
+    `).get(sessionId, now, now);
+        if (!row)
+            return { authenticated: false };
+        const nextExpires = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+        database.prepare('UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE session_id = ?')
+            .run(now, nextExpires, sessionId);
+        return { authenticated: true, sessionId };
+    };
+    const login = async (request, response) => {
+        if (!authRequired || !config)
+            return sendJson(response, 200, { authenticated: true });
+        const ip = request.socket.remoteAddress || 'unknown';
+        const attempt = database.prepare('SELECT * FROM login_attempts WHERE ip = ?').get(ip);
+        if (attempt && Number(attempt.failed_count) >= 8 && Date.now() - Date.parse(String(attempt.last_failed_at)) < 15 * 60 * 1000) {
+            audit('login-throttled', ip);
+            return sendText(response, 429, '登录尝试过多，请稍后再试。');
+        }
+        const body = await readRequestJson(request);
+        const password = String(body.password || '');
+        const totp = String(body.totp || '').trim();
+        const hashed = hashPassword(password, config.passwordSalt);
+        const passwordOk = verifyHash(hashed.hash, config.passwordHash);
+        const step = Math.floor(Date.now() / 30000);
+        const totpOk = [-1, 0, 1].some((offset) => generateTotp(config.totpSecret, step + offset) === totp);
+        const replayKey = `${step}:${totp}`;
+        const replay = totpOk ? database.prepare('SELECT code_step FROM totp_replay WHERE code_step = ?').get(replayKey) : null;
+        if (!passwordOk || !totpOk || replay) {
+            database.prepare(`
+        INSERT INTO login_attempts(ip, failed_count, last_failed_at) VALUES (?, 1, ?)
+        ON CONFLICT(ip) DO UPDATE SET failed_count = failed_count + 1, last_failed_at = excluded.last_failed_at
+      `).run(ip, new Date().toISOString());
+            audit('login-failed', ip, { passwordOk, totpOk, replay: Boolean(replay) });
+            return sendText(response, 401, '口令或动态验证码无效。');
+        }
+        database.prepare('DELETE FROM login_attempts WHERE ip = ?').run(ip);
+        database.prepare('INSERT OR IGNORE INTO totp_replay(code_step, used_at) VALUES (?, ?)').run(replayKey, new Date().toISOString());
+        const sessionId = base64Url(randomBytes(32));
+        const now = new Date();
+        database.prepare(`
+      INSERT INTO sessions(session_id, created_at, last_seen_at, expires_at, absolute_expires_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(sessionId, now.toISOString(), now.toISOString(), new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString(), new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString());
+        audit('login-success', ip);
+        response.setHeader('set-cookie', `lotterymcp_session=${encodeURIComponent(sessionId)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${input.accessMode === 'public' ? '; Secure' : ''}`);
+        return sendJson(response, 200, { authenticated: true });
+    };
+    const logout = (request, response) => {
+        const sessionId = parseCookies(request.headers.cookie).lotterymcp_session;
+        if (sessionId)
+            database.prepare('DELETE FROM sessions WHERE session_id = ?').run(sessionId);
+        response.setHeader('set-cookie', 'lotterymcp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+        return sendJson(response, 200, { authenticated: false });
+    };
+    return {
+        authRequired,
+        getSession,
+        login,
+        logout,
+        close: () => database.close(),
+    };
 };
 export const runPl3DailyOnce = async (input) => {
     const dataDir = path.resolve(String(input.config.dataDir || '.lotterymcp-data'));
@@ -277,6 +590,7 @@ export const runPl3DailyOnce = async (input) => {
         });
         const report = await writePl3DailyReport({
             dataDir,
+            runId,
             prediction: envelope.data,
             sync: syncResult,
         });
@@ -349,33 +663,158 @@ const contentTypeFor = (filePath) => {
         return 'application/json; charset=utf-8';
     if (filePath.endsWith('.md'))
         return 'text/markdown; charset=utf-8';
+    if (filePath.endsWith('.js'))
+        return 'text/javascript; charset=utf-8';
+    if (filePath.endsWith('.css'))
+        return 'text/css; charset=utf-8';
     if (filePath.endsWith('.svg'))
         return 'image/svg+xml';
+    if (filePath.endsWith('.ico'))
+        return 'image/x-icon';
     return 'text/plain; charset=utf-8';
 };
 export const servePl3Reports = async (input) => {
-    const reportsDir = path.join(path.resolve(input.dataDir), 'reports');
+    const dataDir = path.resolve(input.dataDir);
+    const reportsDir = reportsRoot(dataDir);
+    const assetsDir = webAssetsDir();
     await mkdir(reportsDir, { recursive: true });
     const host = input.host || '127.0.0.1';
     const port = input.port || 4317;
+    const accessMode = resolveWebAccessMode(input.accessMode);
+    const sessionManager = await createWebSessionManager({ dataDir, accessMode });
+    const requireSession = (request, response) => {
+        const session = sessionManager.getSession(request);
+        if (!session.authenticated) {
+            sendText(response, 401, '需要登录。');
+            return false;
+        }
+        return true;
+    };
+    const handleApi = async (request, response, url) => {
+        if (url.pathname === '/healthz')
+            return sendJson(response, 200, { ok: true, service: 'lotterymcp-web' });
+        if (url.pathname === '/readyz') {
+            return sendJson(response, hasPl3Database(dataDir) ? 200 : 503, {
+                ready: hasPl3Database(dataDir),
+                database: hasPl3Database(dataDir) ? resolvePl3DatabasePath(dataDir) : null,
+            });
+        }
+        if (url.pathname === '/api/v1/session') {
+            const session = sessionManager.getSession(request);
+            return sendJson(response, 200, {
+                authenticated: session.authenticated,
+                accessMode,
+                authRequired: sessionManager.authRequired,
+            });
+        }
+        if (url.pathname === '/api/v1/auth/login' && request.method === 'POST') {
+            return sessionManager.login(request, response);
+        }
+        if (url.pathname === '/api/v1/auth/logout' && request.method === 'POST') {
+            return sessionManager.logout(request, response);
+        }
+        if (!requireSession(request, response))
+            return undefined;
+        if (url.pathname === '/api/v1/overview') {
+            if (!hasPl3Database(dataDir))
+                return sendText(response, 503, '尚未找到排列3 SQLite 数据库。');
+            const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true });
+            try {
+                const schemaVersion = store.getSchemaVersion();
+                const status = store.getStatus();
+                const runs = schemaVersion >= 3 ? store.listOnlinePredictionRuns({ limit: 1 }) : [];
+                const latestReport = (await listDailyReports(dataDir, 1))[0] || null;
+                const detail = latestReport ? await readReportDetail(dataDir, latestReport.runId) : null;
+                const ledgerPath = path.join(dataDir, 'pl3-predictions.json');
+                const ledger = await readJsonIfExists(ledgerPath, { version: 1, predictions: [] });
+                const latestPrediction = detail?.payload.prediction || ledger.predictions.at(-1) || null;
+                const currentSettlement = await getCurrentSettlement(dataDir, latestPrediction?.predictionId || latestReport?.predictionId);
+                sendJson(response, 200, {
+                    generatedAt: new Date().toISOString(),
+                    accessMode,
+                    data: {
+                        usableRecords: status.usableRecords,
+                        confirmedRecords: status.confirmedRecords,
+                        singleSourceRecords: status.singleSourceRecords,
+                        conflictRecords: status.conflictRecords,
+                        latestPeriod: status.latestPeriod,
+                        latestDrawDate: status.latestDrawDate,
+                        dualSourceCoverage: status.dualSourceCoverage,
+                    },
+                    latestRun: runs[0] || null,
+                    latestReport,
+                    latestPrediction,
+                    currentSettlement,
+                    ledger: {
+                        total: ledger.predictions.length,
+                        pending: ledger.predictions.filter((item) => item.settlement.status === 'pending').length,
+                        provisional: ledger.predictions.filter((item) => item.settlement.status === 'provisional').length,
+                        confirmed: ledger.predictions.filter((item) => item.settlement.status === 'confirmed').length,
+                        disputed: ledger.predictions.filter((item) => item.settlement.status === 'disputed').length,
+                        settled: ledger.predictions.filter((item) => item.settlement.status === 'settled').length,
+                    },
+                    tools: MCP_SERVER_TOOLS,
+                });
+            }
+            finally {
+                store.close();
+            }
+            return undefined;
+        }
+        if (url.pathname === '/api/v1/reports') {
+            const limit = Number(url.searchParams.get('limit') || 20);
+            return sendJson(response, 200, { reports: await listDailyReports(dataDir, limit) });
+        }
+        const reportMatch = /^\/api\/v1\/reports\/([^/]+)$/.exec(url.pathname);
+        if (reportMatch) {
+            const detail = await readReportDetail(dataDir, decodeURIComponent(reportMatch[1]));
+            if (!detail)
+                return sendText(response, 404, '日报不存在。');
+            return sendJson(response, 200, detail);
+        }
+        if (url.pathname === '/api/v1/operations') {
+            if (!hasPl3Database(dataDir))
+                return sendJson(response, 200, { runs: [], operations: [] });
+            const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true });
+            try {
+                const limit = Number(url.searchParams.get('limit') || 20);
+                const schemaVersion = store.getSchemaVersion();
+                return sendJson(response, 200, {
+                    runs: schemaVersion >= 3 ? store.listOnlinePredictionRuns({ limit }) : [],
+                    operations: schemaVersion >= 3 ? store.listOperationalEvents({ limit }) : [],
+                });
+            }
+            finally {
+                store.close();
+            }
+        }
+        return sendText(response, 404, 'API not found');
+    };
     const server = http.createServer(async (request, response) => {
         try {
-            const requested = decodeURIComponent(new URL(request.url || '/', `http://${host}`).pathname);
-            const relative = safeRelativePath(requested === '/' ? 'index.html' : requested);
-            const filePath = path.resolve(reportsDir, relative);
-            if (!filePath.startsWith(path.resolve(reportsDir)))
+            const url = new URL(request.url || '/', `http://${host}`);
+            if (url.pathname === '/healthz' || url.pathname === '/readyz' || url.pathname.startsWith('/api/')) {
+                await handleApi(request, response, url);
+                return;
+            }
+            const relative = safeRelativePath(url.pathname === '/' ? 'index.html' : url.pathname);
+            let filePath = path.resolve(assetsDir, relative);
+            if (!filePath.startsWith(path.resolve(assetsDir)))
                 throw new Error('越界路径');
+            if (!existsSync(filePath))
+                filePath = path.join(assetsDir, 'index.html');
             const body = await readFile(filePath);
-            response.writeHead(200, { 'content-type': contentTypeFor(filePath) });
+            response.writeHead(200, { 'content-type': contentTypeFor(filePath), 'cache-control': filePath.endsWith('index.html') ? 'no-store' : 'public, max-age=31536000, immutable' });
             response.end(body);
         }
-        catch {
+        catch (error) {
             response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-            response.end('Not found');
+            response.end(error instanceof Error ? error.message : 'Not found');
         }
     });
     await new Promise((resolve) => server.listen(port, host, resolve));
-    return { server, url: `http://${host}:${port}/`, reportsDir };
+    server.on('close', () => sessionManager.close());
+    return { server, url: `http://${host}:${port}/`, reportsDir, assetsDir, accessMode };
 };
 export const listReportDays = async (dataDir) => {
     const dailyDir = path.join(path.resolve(dataDir), 'reports', 'daily');

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0 - 2026-07-21
+
+- 新增中文只读 Web Dashboard，包含总览、历史日报、回测分析、数据质量和运行状态五个页面。
+- 日报改为按北京时间日期和 `runId` 不可变保存，并维护 `reports/index.json` 与 `reports/latest.json`。
+- `ops serve-reports` 改为提供打包 SPA 和只读 `/api/v1/*`，动态合并预测账本中的当前复盘状态。
+- 新增 `LOTTERYMCP_WEB_ACCESS_MODE=tunnel|public`；默认 tunnel 仍适合 SSH 隧道。
+- 新增独立 Web 认证存储和 `ops auth init`，公网模式要求口令、TOTP、HttpOnly SameSite Strict Cookie、登录限流和审计。
+- Docker Compose 将 reports 的 P3 数据挂载为只读，并拆分 `/web-state` 与 `/secrets`，worker 不再读取 Web 认证 secret。
+- 发布物随 CLI 包含 Web 静态资源，MCP 工具和预测算法保持不变。
+
 ## 0.6.0 - 2026-07-20
 
 - 新增 M003 线上运维 schema，记录每日预测运行、运行事件和企业微信通知投递。
