@@ -21,6 +21,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspace lotterymcp-web && tsc -b packages/core packages/mcp-server packages/cli && node scripts/copy-web-assets.mjs",
+    "rebuild:serve": "bash scripts/rebuild-and-serve.sh",
     "dev": "npm run build && node packages/cli/dist/index.js --help",
     "test": "npm run build && node --test tests/banner-render.test.mjs tests/cli-help.test.mjs tests/core-client.test.mjs tests/data-files.test.mjs tests/mcp-server.test.mjs tests/official-sync.test.mjs tests/pl3-experiments.test.mjs tests/pl3-features.test.mjs tests/pl3-prediction.test.mjs tests/pl3-store.test.mjs tests/publish-package.test.mjs && npm run test --workspace lotterymcp-web",
     "reproduce": "npm run build && node scripts/reproduction-smoke.mjs",
