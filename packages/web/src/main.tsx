@@ -734,7 +734,7 @@ function BacktestPage({ prediction }: { prediction: PredictionPayload | null }) 
       <Panel title="Walk-forward 回测" icon={<BarChart3 size={18} />}>
         <div className="metric-list">
           <Metric label="状态" value={statusLabel(backtest?.status || '暂无')} />
-          <Metric label="测试折数" value={`${backtest?.cases || 0}`} />
+          <Metric label="测试折数" value={backtest?.cases?.length || 0} />
           <Metric label="历史模拟 ROI" value={hasBacktest ? `${(backtest!.roi! * 100).toFixed(2)}%` : '暂无'} />
           <Metric label="单注成本" value={`${prediction?.payouts.stake || 2} 元`} />
         </div>
