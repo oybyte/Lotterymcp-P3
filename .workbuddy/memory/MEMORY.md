@@ -11,6 +11,7 @@
 - 只读研究台网站由 `packages/cli` 的 `ops serve-reports` 托管，读取 `packages/cli/dist/web`（前端构建后须 `scripts/copy-web-assets.mjs` 同步）。
 - 数据目录用 `LOTTERYMCP_DATA_DIR="D:/as-workplace-cups-2026/Lotterymcp-P3/.lotterymcp-data"`（Git Bash 下用正斜杠 Windows 绝对路径，避免 `D:\d\...` 错路径）。
 - **一键重建+重启**：`npm run rebuild:serve`（即 `bash scripts/rebuild-and-serve.sh`）——自动清空 dist（绕过 safe-delete）、build、data sync、ops run-once、重启 serve 并健康检查。改完代码直接跑它即可。
+- **重复投注防护**：`ops run-once` 对当前截止期号已有预测默认拒绝（`--force` 覆盖）；ledger/trends/总览聚合按 afterPeriod 去重（保留最新）。2026-08-07 曾因同分钟两次 run-once 造成 26209 期重复投注（账本虚增 -200），已清理归档并修正账本（-307 → -107）。
 - 前端用 managed Node22 构建；CLI/SQLite 用系统 Node24（`better-sqlite3` 原生模块按 Node24 编译）。
 - 后端改 `ops.ts` 后须重编译 `tsc -b packages/core packages/cli` 并**重启 serve 进程**（内存缓存概览）。
 - 每日 9:30 自动 `data sync` + `ops run-once`（自动化已在 workbuddy.db）。
