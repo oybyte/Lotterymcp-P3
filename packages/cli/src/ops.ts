@@ -84,6 +84,34 @@ const readJsonIfExists = async <T>(filePath: string, fallback: T): Promise<T> =>
   return JSON.parse(await readFile(filePath, 'utf8')) as T
 }
 
+/** 同一 afterPeriod 只保留最新一条预测（去重，防止重复投注污染账本/趋势） */
+const dedupePredictionsByAfterPeriod = (predictions: Pl3PredictionResult[]): Pl3PredictionResult[] => {
+  const byPeriod = new Map<string, Pl3PredictionResult>()
+  predictions.forEach((prediction) => {
+    const key = String(prediction.afterPeriod)
+    const existing = byPeriod.get(key)
+    if (!existing || String(prediction.generatedAt) > String(existing.generatedAt)) {
+      byPeriod.set(key, prediction)
+    }
+  })
+  return [...byPeriod.values()]
+}
+
+/** 读取数据目录最新期号（防重判断用） */
+const getLatestPeriod = (dataDir: string): string | null => {
+  if (!hasPl3Database(dataDir)) return null
+  try {
+    const db = new Database(path.join(dataDir, 'pl3.sqlite'), { readonly: true })
+    const row = db.prepare('SELECT period FROM draws ORDER BY period_num DESC LIMIT 1').get() as
+      | { period: string }
+      | undefined
+    db.close()
+    return row?.period ?? null
+  } catch {
+    return null
+  }
+}
+
 const base64Url = (buffer: Buffer) =>
   buffer.toString('base64').replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
 
@@ -729,6 +757,8 @@ export const runPl3DailyOnce = async (input: {
   sync?: boolean
   migrate?: boolean
   notify?: boolean
+  /** 同 afterPeriod 已存在预测时仍强制重新生成（默认拒绝，防重复投注） */
+  force?: boolean
 }) => {
   const dataDir = path.resolve(String(input.config.dataDir || '.lotterymcp-data'))
   const runId = `p3-${new Date().toISOString().replace(/[:.]/g, '-')}`
@@ -769,6 +799,21 @@ export const runPl3DailyOnce = async (input: {
   }
 
   try {
+    // 防重：同一 afterPeriod 已存在预测时拒绝重复投注（除非 --force）
+    if (input.force !== true) {
+      const latestPeriod = getLatestPeriod(dataDir)
+      if (latestPeriod) {
+        const ledgerPath = path.join(dataDir, 'pl3-predictions.json')
+        const ledger = await readJsonIfExists<Pl3PredictionLedger>(ledgerPath, { version: 1, predictions: [] })
+        const existing = ledger.predictions.find((item) => String(item.afterPeriod) === String(latestPeriod))
+        if (existing) {
+          throw new Error(
+            `截止期号 ${latestPeriod} 已存在预测（predictionId ${existing.predictionId}，tickets ${existing.tickets?.length ?? 0}），` +
+              '为避免重复投注已跳过。如需强制重新生成请追加 --force。',
+          )
+        }
+      }
+    }
     const client = createLotteryMcpClient({
       apiBaseUrl: input.config.apiBaseUrl,
       token: input.config.token,
@@ -976,13 +1021,13 @@ export const servePl3Reports = async (input: {
           latestReport,
           latestPrediction,
           currentSettlement,
-          ledger: {
-            total: ledger.predictions.length,
-            pending: ledger.predictions.filter((item) => item.settlement.status === 'pending').length,
-            provisional: ledger.predictions.filter((item) => item.settlement.status === 'provisional').length,
-            confirmed: ledger.predictions.filter((item) => item.settlement.status === 'confirmed').length,
-            disputed: ledger.predictions.filter((item) => item.settlement.status === 'disputed').length,
-          },
+          ledger: ((predictions) => ({
+            total: predictions.length,
+            pending: predictions.filter((item) => item.settlement.status === 'pending').length,
+            provisional: predictions.filter((item) => item.settlement.status === 'provisional').length,
+            confirmed: predictions.filter((item) => item.settlement.status === 'confirmed').length,
+            disputed: predictions.filter((item) => item.settlement.status === 'disputed').length,
+          }))(dedupePredictionsByAfterPeriod(ledger.predictions)),
           tools: MCP_SERVER_TOOLS,
         })
       } finally {
@@ -1033,7 +1078,7 @@ export const servePl3Reports = async (input: {
     if (url.pathname === '/api/v1/ledger') {
       const ledgerPath = path.join(dataDir, 'pl3-predictions.json')
       const ledger = await readJsonIfExists<Pl3PredictionLedger>(ledgerPath, { version: 1, predictions: [] })
-      const rows = ledger.predictions
+      const rows = dedupePredictionsByAfterPeriod(ledger.predictions)
         .slice()
         .sort((left, right) => String(left.afterPeriod).localeCompare(String(right.afterPeriod)))
         .map((prediction) => ({
@@ -1063,7 +1108,7 @@ export const servePl3Reports = async (input: {
     if (url.pathname === '/api/v1/trends') {
       const ledgerPath = path.join(dataDir, 'pl3-predictions.json')
       const ledger = await readJsonIfExists<Pl3PredictionLedger>(ledgerPath, { version: 1, predictions: [] })
-      const sorted = ledger.predictions
+      const sorted = dedupePredictionsByAfterPeriod(ledger.predictions)
         .slice()
         .sort((left, right) => String(left.afterPeriod).localeCompare(String(right.afterPeriod)))
       let cumulativeProfit = 0

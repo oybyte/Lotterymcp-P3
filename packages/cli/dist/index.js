@@ -107,7 +107,7 @@ const renderExperimentUsage = () => `用法:
   实验只读取 immutable dataset snapshot；冻结区只能显式确认后评估一次。
 `;
 const renderOpsUsage = () => `用法:
-  lotterymcp ops run-once [--periods 200] [--tickets 10] [--play mixed] [--training-status confirmed|mixed] [--no-sync] [--migrate] [--no-notify] [--json]
+  lotterymcp ops run-once [--periods 200] [--tickets 10] [--play mixed] [--training-status confirmed|mixed] [--no-sync] [--migrate] [--no-notify] [--force] [--json]
   lotterymcp ops serve-reports [--host 127.0.0.1] [--port 4317] [--access-mode tunnel|public]
   lotterymcp ops reports [--json]
   lotterymcp ops auth init --password PASSWORD [--json]
@@ -1516,6 +1516,7 @@ const runOpsCommand = async (argv) => {
                 sync: !argv.includes('--no-sync'),
                 migrate: argv.includes('--migrate'),
                 notify: !argv.includes('--no-notify'),
+                force: argv.includes('--force'),
             });
             if (asJson)
                 console.log(JSON.stringify(result, null, 2));

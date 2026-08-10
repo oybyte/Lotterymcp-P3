@@ -49,7 +49,7 @@ npm run build
 echo "==> [3/4] 同步开奖数据 + 生成日报"
 export LOTTERYMCP_DATA_DIR="$DATA_DIR_NODE"
 "$NODE24" packages/cli/dist/index.js data sync
-"$NODE24" packages/cli/dist/index.js ops run-once
+"$NODE24" packages/cli/dist/index.js ops run-once || echo "  [跳过] 当前截止期号已有预测（防重保护），如需强制重新生成请手动加 --force"
 
 echo "==> [4/4] 重启 serve-reports (127.0.0.1:$PORT)"
 # 杀掉所有残留的 serve-reports 进程（不限端口），避免新旧版本同时监听导致前端拿到旧 API 字段而崩

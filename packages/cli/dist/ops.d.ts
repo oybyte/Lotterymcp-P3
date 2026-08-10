@@ -107,6 +107,8 @@ export declare const runPl3DailyOnce: (input: {
     sync?: boolean;
     migrate?: boolean;
     notify?: boolean;
+    /** 同 afterPeriod 已存在预测时仍强制重新生成（默认拒绝，防重复投注） */
+    force?: boolean;
 }) => Promise<{
     runId: string;
     prediction: Pl3PredictionResult;
