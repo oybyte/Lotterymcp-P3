@@ -1,14 +1,5 @@
 import { createHash } from 'node:crypto'
-import {
-  copyFile,
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  rename,
-  stat,
-  unlink,
-} from 'node:fs/promises'
+import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink } from 'node:fs/promises'
 import { existsSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
@@ -56,6 +47,15 @@ export type Pl3StoreStatus = {
   legacyPredictionCount: number
 }
 
+export type Pl3YearConfidence = {
+  year: string
+  totalPeriods: number
+  confirmedRecords: number
+  singleSourceRecords: number
+  conflictRecords: number
+  dualSourceCoverage: number | null
+}
+
 export type Pl3ImportOptions = {
   provider: Pl3ObservationProvider
   sourceUrl?: string
@@ -96,6 +96,13 @@ export type Pl3ArchivePageInput = {
 export type Pl3ArchiveImportResult = Omit<Pl3ImportResult, 'snapshotId'> & {
   sourceSnapshotCount: number
   sourceSnapshotIds: string[]
+}
+
+export type Pl3ReconcileHistoryResult = {
+  scannedPeriods: number
+  upgradedToConfirmed: number
+  remainingSingleSource: number
+  remainingConflicts: number
 }
 
 export type Pl3StoreQuery = {
@@ -142,12 +149,7 @@ export type Pl3FeatureSnapshotStorageRecord = {
 }
 
 export type Pl3ExperimentStatus =
-  | 'registered'
-  | 'running'
-  | 'development_complete'
-  | 'frozen_evaluated'
-  | 'interrupted'
-  | 'failed'
+  'registered' | 'running' | 'development_complete' | 'frozen_evaluated' | 'interrupted' | 'failed'
 
 export type Pl3ExperimentStorageRecord = {
   experimentId: string
@@ -284,6 +286,141 @@ type ObservationRow = {
   observation_count: number
 }
 
+type SnapshotConflictRow = {
+  period: string
+  period_num: number
+  updated_at: string
+  observations_json: string
+}
+
+type DatasetSnapshotRow = {
+  snapshot_id: string
+  from_period: string
+  after_period: string
+  record_count: number
+  data_hash: string
+  code_commit: string | null
+  created_at: string
+  quality: Pl3DatasetSnapshot['quality']
+  confirmed_count: number
+  single_source_count: number
+}
+
+type DatasetSnapshotDrawRow = {
+  id: number
+  period: string
+  period_num: number
+  draw_date: string
+  d1: number
+  d2: number
+  d3: number
+  numbers: string
+  provider: string
+  source_url: string | null
+  last_observed_at: string
+  draw_status: Pl3StoredDrawRecord['status']
+}
+
+type FeatureSnapshotRow = {
+  feature_snapshot_id: string
+  dataset_snapshot_id: string
+  after_period: string
+  feature_version: string
+  windows_json: string
+  window_config_hash: string
+  payload_gzip: Buffer
+  payload_hash: string
+  code_commit: string | null
+  created_at: string
+}
+
+type ExperimentRow = {
+  experiment_id: string
+  schema_version: number
+  name: string
+  mode: Pl3ExperimentStorageRecord['mode']
+  research_batch_id: string
+  dataset_snapshot_id: string
+  feature_version: string
+  spec_json: string
+  spec_hash: string
+  code_commit: string
+  random_seed: number
+  status: Pl3ExperimentStatus
+  report_path: string | null
+  report_hash: string | null
+  error_message: string | null
+  created_at: string
+  updated_at: string
+}
+
+type ExperimentFoldRow = {
+  experiment_id: string
+  fold_level: Pl3ExperimentFoldStorageRecord['foldLevel']
+  fold_index: number
+  train_from_period: string
+  train_to_period: string
+  test_from_period: string
+  test_to_period: string
+  status: Pl3ExperimentFoldStorageRecord['status']
+  selected_params_json: string | null
+  metrics_json: string | null
+  result_path: string | null
+  result_hash: string | null
+  started_at: string | null
+  completed_at: string | null
+}
+
+type OnlinePredictionRunRow = {
+  run_id: string
+  prediction_id: string | null
+  status: Pl3OnlinePredictionRun['status']
+  data_mode: string
+  after_period: string | null
+  target_period: string | null
+  report_path: string | null
+  report_hash: string | null
+  error_message: string | null
+  started_at: string
+  completed_at: string | null
+}
+
+type OperationalEventRow = {
+  event_id: number
+  level: Pl3OperationalEventLevel
+  event_type: string
+  message: string
+  details_json: string | null
+  created_at: string
+}
+
+type NotificationDeliveryRow = {
+  delivery_id: number
+  channel: string
+  dedupe_key: string
+  status: Pl3NotificationDelivery['status']
+  target: string | null
+  message_hash: string
+  error_message: string | null
+  delivered_at: string
+}
+
+type ExperimentAuditRow = {
+  audit_id: number
+  action: string
+  status: string
+  details_json: string
+  created_at: string
+}
+
+type RuntimeLockRow = {
+  lock_name: string
+  owner_id: string
+  owner_pid: number
+  acquired_at: string
+  expires_at: string
+}
+
 const OFFICIAL_CONFIRMATION_PROVIDERS = new Set<Pl3OfficialProvider>(['lottery-gov-cn', 'zhcw'])
 const DEFAULT_DATA_DIR = '.lotterymcp-data'
 const MAINTENANCE_LOCK_MAX_AGE_MS = 120_000
@@ -307,7 +444,9 @@ const normalizeTimestamp = (value: unknown, fallback = new Date().toISOString())
 }
 
 const normalizeProvider = (value: unknown) => {
-  const provider = String(value || '').trim().toLowerCase()
+  const provider = String(value || '')
+    .trim()
+    .toLowerCase()
   if (!provider) throw new Pl3PredictionError('LOTTERYMCP_PL3_PROVIDER_REQUIRED', '排列3数据来源不能为空。')
   if (provider.length > 80) throw new Pl3PredictionError('LOTTERYMCP_PL3_PROVIDER_INVALID', '排列3数据来源名称过长。')
   return provider
@@ -586,9 +725,9 @@ const applyMigrations = (database: Database.Database) => {
     )
   `)
 
-  const existing = database.prepare(
-    'SELECT version, checksum FROM schema_migrations WHERE version = ?',
-  ).get(PL3_DATABASE_SCHEMA_VERSION) as { version: number; checksum: string } | undefined
+  const existing = database
+    .prepare('SELECT version, checksum FROM schema_migrations WHERE version = ?')
+    .get(PL3_DATABASE_SCHEMA_VERSION) as { version: number; checksum: string } | undefined
 
   if (existing) {
     if (existing.checksum !== migration001Checksum) {
@@ -599,29 +738,35 @@ const applyMigrations = (database: Database.Database) => {
 
   database.transaction(() => {
     database.exec(createMigration001)
-    database.prepare(
-      'INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)',
-    ).run(PL3_DATABASE_SCHEMA_VERSION, 'p3-data-archive', migration001Checksum, new Date().toISOString())
+    database
+      .prepare('INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)')
+      .run(PL3_DATABASE_SCHEMA_VERSION, 'p3-data-archive', migration001Checksum, new Date().toISOString())
   })()
 }
 
-const serializeDrawRow = (row: DrawRow | undefined) => row ? canonicalize({
-  period: row.period,
-  drawDate: row.draw_date,
-  numbers: row.numbers,
-  status: row.status,
-  selectedObservationId: row.selected_observation_id,
-}) : null
+const serializeDrawRow = (row: DrawRow | undefined) =>
+  row
+    ? canonicalize({
+        period: row.period,
+        drawDate: row.draw_date,
+        numbers: row.numbers,
+        status: row.status,
+        selectedObservationId: row.selected_observation_id,
+      })
+    : null
 
 export class Pl3Store {
   readonly databasePath: string
   private readonly database: Database.Database
 
-  constructor(databasePath: string, options: {
-    readonly?: boolean
-    fileMustExist?: boolean
-    maintenance?: boolean
-  } = {}) {
+  constructor(
+    databasePath: string,
+    options: {
+      readonly?: boolean
+      fileMustExist?: boolean
+      maintenance?: boolean
+    } = {},
+  ) {
     this.databasePath = path.resolve(databasePath)
     const maintenanceLockPath = path.join(path.dirname(this.databasePath), 'pl3.sqlite.maintenance.lock')
     if (!options.maintenance && existsSync(maintenanceLockPath)) {
@@ -653,16 +798,22 @@ export class Pl3Store {
 
   private setMeta(key: string, value: string) {
     const now = new Date().toISOString()
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       INSERT INTO app_meta(key, value, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `).run(key, value, now)
+    `,
+      )
+      .run(key, value, now)
   }
 
   private getMeta(key: string) {
-    const row = this.database.prepare('SELECT value FROM app_meta WHERE key = ?').get(key) as {
-      value: string
-    } | undefined
+    const row = this.database.prepare('SELECT value FROM app_meta WHERE key = ?').get(key) as
+      | {
+          value: string
+        }
+      | undefined
     return row?.value
   }
 
@@ -676,28 +827,34 @@ export class Pl3Store {
     parseStatus: 'parsed' | 'failed'
     metadata?: Record<string, unknown>
   }) {
-    const snapshotId = sha256(canonicalize({
-      provider: input.provider,
-      fetchedAt: input.fetchedAt,
-      contentHash: input.contentHash,
-      rawPath: input.rawPath || null,
-    }))
-    this.database.prepare(`
+    const snapshotId = sha256(
+      canonicalize({
+        provider: input.provider,
+        fetchedAt: input.fetchedAt,
+        contentHash: input.contentHash,
+        rawPath: input.rawPath || null,
+      }),
+    )
+    this.database
+      .prepare(
+        `
       INSERT OR IGNORE INTO source_snapshots(
         snapshot_id, provider, source_url, fetched_at, status_code,
         content_hash, raw_path, parse_status, metadata_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      snapshotId,
-      input.provider,
-      input.sourceUrl || null,
-      input.fetchedAt,
-      input.statusCode ?? null,
-      input.contentHash,
-      input.rawPath || null,
-      input.parseStatus,
-      canonicalize(input.metadata || {}),
-    )
+    `,
+      )
+      .run(
+        snapshotId,
+        input.provider,
+        input.sourceUrl || null,
+        input.fetchedAt,
+        input.statusCode ?? null,
+        input.contentHash,
+        input.rawPath || null,
+        input.parseStatus,
+        canonicalize(input.metadata || {}),
+      )
     return snapshotId
   }
 
@@ -708,7 +865,9 @@ export class Pl3Store {
     snapshotId: string
     observedAt: string
   }) {
-    return this.database.prepare(`
+    return this.database
+      .prepare(
+        `
       INSERT INTO draw_observations(
         period, period_num, draw_date, d1, d2, d3, numbers, provider,
         source_url, source_snapshot_id, first_observed_at, last_observed_at, observation_count
@@ -717,30 +876,36 @@ export class Pl3Store {
         last_observed_at = excluded.last_observed_at,
         observation_count = draw_observations.observation_count + 1
       RETURNING id, observation_count
-    `).get(
-      input.record.period,
-      toPeriodNumber(input.record.period),
-      input.record.drawDate,
-      input.record.numbersList[0],
-      input.record.numbersList[1],
-      input.record.numbersList[2],
-      input.record.numbers,
-      input.provider,
-      input.sourceUrl || null,
-      input.snapshotId,
-      input.observedAt,
-      input.observedAt,
-    ) as { id: number; observation_count: number }
+    `,
+      )
+      .get(
+        input.record.period,
+        toPeriodNumber(input.record.period),
+        input.record.drawDate,
+        input.record.numbersList[0],
+        input.record.numbersList[1],
+        input.record.numbersList[2],
+        input.record.numbers,
+        input.provider,
+        input.sourceUrl || null,
+        input.snapshotId,
+        input.observedAt,
+        input.observedAt,
+      ) as { id: number; observation_count: number }
   }
 
   private reconcilePeriod(period: string, now: string) {
-    const observations = this.database.prepare(`
+    const observations = this.database
+      .prepare(
+        `
       SELECT id, period, period_num, draw_date, d1, d2, d3, numbers, provider, source_url,
              first_observed_at, last_observed_at, observation_count
       FROM draw_observations
       WHERE period = ?
       ORDER BY id ASC
-    `).all(period) as ObservationRow[]
+    `,
+      )
+      .all(period) as ObservationRow[]
 
     if (observations.length === 0) return
     const oldRow = this.database.prepare('SELECT * FROM draws WHERE period = ?').get(period) as DrawRow | undefined
@@ -770,12 +935,13 @@ export class Pl3Store {
         const matching = [...values.values()][0]!
         selected = matching.at(-1)
         const officialProviders = new Set(
-          matching.map((item) => item.provider).filter((item): item is Pl3OfficialProvider =>
-            OFFICIAL_CONFIRMATION_PROVIDERS.has(item as Pl3OfficialProvider)),
+          matching
+            .map((item) => item.provider)
+            .filter((item): item is Pl3OfficialProvider =>
+              OFFICIAL_CONFIRMATION_PROVIDERS.has(item as Pl3OfficialProvider),
+            ),
         )
-        status = officialProviders.size === OFFICIAL_CONFIRMATION_PROVIDERS.size
-          ? 'confirmed'
-          : 'single_source'
+        status = officialProviders.size === OFFICIAL_CONFIRMATION_PROVIDERS.size ? 'confirmed' : 'single_source'
       }
     }
 
@@ -787,7 +953,9 @@ export class Pl3Store {
       selectedObservationId: selected?.id || null,
     }
 
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       INSERT INTO draws(
         period, period_num, draw_date, d1, d2, d3, numbers, status,
         selected_observation_id, manual_observation_id, resolved_through_observation_id,
@@ -811,27 +979,33 @@ export class Pl3Store {
           ELSE NULL
         END,
         updated_at = excluded.updated_at
-    `).run(
-      period,
-      observations[0]!.period_num,
-      selected?.draw_date || null,
-      selected?.d1 ?? null,
-      selected?.d2 ?? null,
-      selected?.d3 ?? null,
-      selected?.numbers || null,
-      status,
-      selected?.id || null,
-      now,
-      now,
-      latestObservationId,
-      latestObservationId,
-    )
+    `,
+      )
+      .run(
+        period,
+        observations[0]!.period_num,
+        selected?.draw_date || null,
+        selected?.d1 ?? null,
+        selected?.d2 ?? null,
+        selected?.d3 ?? null,
+        selected?.numbers || null,
+        status,
+        selected?.id || null,
+        now,
+        now,
+        latestObservationId,
+        latestObservationId,
+      )
 
     if (oldRow && serializeDrawRow(oldRow) !== canonicalize(nextValue)) {
-      this.database.prepare(`
+      this.database
+        .prepare(
+          `
         INSERT INTO draw_revisions(period, old_value_json, new_value_json, reason, evidence_url, revised_at)
         VALUES (?, ?, ?, ?, NULL, ?)
-      `).run(period, serializeDrawRow(oldRow), canonicalize(nextValue), 'source-reconciliation', now)
+      `,
+        )
+        .run(period, serializeDrawRow(oldRow), canonicalize(nextValue), 'source-reconciliation', now)
     }
   }
 
@@ -942,7 +1116,8 @@ export class Pl3Store {
       const authoritativeTotal = normalizePositiveInteger(options.authoritativeTotal)
       if (authoritativeTotal) {
         const parsedPage = pages.find((page) => page.parseStatus === 'parsed')
-        if (parsedPage) this.setMeta(`authoritative_total:${normalizeProvider(parsedPage.provider)}`, String(authoritativeTotal))
+        if (parsedPage)
+          this.setMeta(`authoritative_total:${normalizeProvider(parsedPage.provider)}`, String(authoritativeTotal))
       }
       return this.getStatus()
     })()
@@ -960,25 +1135,65 @@ export class Pl3Store {
     }
   }
 
-  recordArchivePages(pages: readonly Pl3ArchivePageInput[]) {
-    return this.database.transaction(() => pages.map((page) => this.insertSourceSnapshot({
-      provider: normalizeProvider(page.provider),
-      sourceUrl: page.sourceUrl,
-      fetchedAt: normalizeTimestamp(page.fetchedAt),
-      statusCode: page.statusCode,
-      contentHash: page.contentHash,
-      rawPath: page.rawPath,
-      parseStatus: page.parseStatus,
-      metadata: { page: page.page, discardedBatch: true, ...(page.metadata || {}) },
-    })))()
+  reconcileHistory(): Pl3ReconcileHistoryResult {
+    const candidates = this.database
+      .prepare(
+        `
+      SELECT period FROM draws
+      WHERE status IN ('single_source', 'conflict')
+      ORDER BY period_num ASC
+    `,
+      )
+      .all() as Array<{ period: string }>
+    const now = new Date().toISOString()
+    let upgradedToConfirmed = 0
+    let remainingSingleSource = 0
+    let remainingConflicts = 0
+    this.database.transaction(() => {
+      for (const { period } of candidates) {
+        const before = this.getDrawStatus(period)
+        this.reconcilePeriod(period, now)
+        const after = this.getDrawStatus(period)
+        if (after === 'confirmed' && before !== 'confirmed') upgradedToConfirmed += 1
+        else if (after === 'single_source') remainingSingleSource += 1
+        else if (after === 'conflict') remainingConflicts += 1
+      }
+    })()
+    return {
+      scannedPeriods: candidates.length,
+      upgradedToConfirmed,
+      remainingSingleSource,
+      remainingConflicts,
+    }
   }
 
-  resolveConflict(input: {
-    period: string
-    observationId: number
-    reason: string
-    evidenceUrl?: string
-  }) {
+  private getDrawStatus(period: string): Pl3DrawStatus | null {
+    return (
+      (
+        this.database.prepare('SELECT status FROM draws WHERE period = ?').get(period) as
+          { status: Pl3DrawStatus } | undefined
+      )?.status ?? null
+    )
+  }
+
+  recordArchivePages(pages: readonly Pl3ArchivePageInput[]) {
+    return this.database.transaction(() =>
+      pages.map((page) =>
+        this.insertSourceSnapshot({
+          provider: normalizeProvider(page.provider),
+          sourceUrl: page.sourceUrl,
+          fetchedAt: normalizeTimestamp(page.fetchedAt),
+          statusCode: page.statusCode,
+          contentHash: page.contentHash,
+          rawPath: page.rawPath,
+          parseStatus: page.parseStatus,
+          metadata: { page: page.page, discardedBatch: true, ...(page.metadata || {}) },
+        }),
+      ),
+    )()
+  }
+
+  resolveConflict(input: { period: string; observationId: number; reason: string; evidenceUrl?: string }) {
     const period = String(input.period || '').trim()
     toPeriodNumber(period)
     const reason = String(input.reason || '').trim()
@@ -997,36 +1212,44 @@ export class Pl3Store {
     const now = new Date().toISOString()
 
     return this.database.transaction(() => {
-      const observation = this.database.prepare(`
+      const observation = this.database
+        .prepare(
+          `
         SELECT id, period, period_num, draw_date, d1, d2, d3, numbers, provider, source_url,
                first_observed_at, last_observed_at, observation_count
         FROM draw_observations WHERE id = ? AND period = ?
-      `).get(input.observationId, period) as ObservationRow | undefined
+      `,
+        )
+        .get(input.observationId, period) as ObservationRow | undefined
       if (!observation) throw new Error(`第 ${period} 期不存在 observation ${input.observationId}。`)
       const oldRow = this.database.prepare('SELECT * FROM draws WHERE period = ?').get(period) as DrawRow | undefined
       if (!oldRow) throw new Error(`第 ${period} 期不存在当前真值记录。`)
-      const maxRow = this.database.prepare(
-        'SELECT MAX(id) AS id FROM draw_observations WHERE period = ?',
-      ).get(period) as { id: number }
+      const maxRow = this.database
+        .prepare('SELECT MAX(id) AS id FROM draw_observations WHERE period = ?')
+        .get(period) as { id: number }
 
-      this.database.prepare(`
+      this.database
+        .prepare(
+          `
         UPDATE draws SET
           draw_date = ?, d1 = ?, d2 = ?, d3 = ?, numbers = ?, status = 'confirmed',
           selected_observation_id = ?, manual_observation_id = ?,
           resolved_through_observation_id = ?, updated_at = ?
         WHERE period = ?
-      `).run(
-        observation.draw_date,
-        observation.d1,
-        observation.d2,
-        observation.d3,
-        observation.numbers,
-        observation.id,
-        observation.id,
-        maxRow.id,
-        now,
-        period,
-      )
+      `,
+        )
+        .run(
+          observation.draw_date,
+          observation.d1,
+          observation.d2,
+          observation.d3,
+          observation.numbers,
+          observation.id,
+          observation.id,
+          maxRow.id,
+          now,
+          period,
+        )
 
       const newValue = canonicalize({
         period,
@@ -1035,10 +1258,14 @@ export class Pl3Store {
         status: 'confirmed',
         selectedObservationId: observation.id,
       })
-      this.database.prepare(`
+      this.database
+        .prepare(
+          `
         INSERT INTO draw_revisions(period, old_value_json, new_value_json, reason, evidence_url, revised_at)
         VALUES (?, ?, ?, ?, ?, ?)
-      `).run(period, serializeDrawRow(oldRow), newValue, reason, evidenceUrl, now)
+      `,
+        )
+        .run(period, serializeDrawRow(oldRow), newValue, reason, evidenceUrl, now)
       return this.getRecord(period)
     })()
   }
@@ -1067,7 +1294,9 @@ export class Pl3Store {
     const offset = (page - 1) * limit
     parameters.push(limit, offset)
 
-    const rows = this.database.prepare(`
+    const rows = this.database
+      .prepare(
+        `
       SELECT d.period, d.draw_date, d.d1, d.d2, d.d3, d.numbers, d.status,
              o.id AS observation_id, o.provider, o.source_url, o.last_observed_at
       FROM draws d
@@ -1075,7 +1304,9 @@ export class Pl3Store {
       WHERE ${conditions.join(' AND ')}
       ORDER BY d.period_num DESC
       LIMIT ? OFFSET ?
-    `).all(...parameters) as Array<{
+    `,
+      )
+      .all(...parameters) as Array<{
       period: string
       draw_date: string
       d1: number
@@ -1118,17 +1349,19 @@ export class Pl3Store {
       conditions.push('draw_date <= ?')
       parameters.push(String(query.toDate))
     }
-    const row = this.database.prepare(
-      `SELECT COUNT(*) AS count FROM draws WHERE ${conditions.join(' AND ')}`,
-    ).get(...parameters) as { count: number }
+    const row = this.database
+      .prepare(`SELECT COUNT(*) AS count FROM draws WHERE ${conditions.join(' AND ')}`)
+      .get(...parameters) as { count: number }
     return row.count
   }
 
-  getConflicts(query: {
-    fromPeriod?: string
-    toPeriod?: string
-    type?: Pl3ConflictType
-  } = {}) {
+  getConflicts(
+    query: {
+      fromPeriod?: string
+      toPeriod?: string
+      type?: Pl3ConflictType
+    } = {},
+  ) {
     const conditions = [`d.status = 'conflict'`]
     const parameters: number[] = []
     if (query.fromPeriod) {
@@ -1139,7 +1372,9 @@ export class Pl3Store {
       conditions.push('d.period_num <= ?')
       parameters.push(toPeriodNumber(query.toPeriod))
     }
-    const rows = this.database.prepare(`
+    const rawRows = this.database
+      .prepare(
+        `
       SELECT d.period, d.period_num, d.updated_at,
              json_group_array(json_object(
                'observationId', o.id,
@@ -1154,7 +1389,10 @@ export class Pl3Store {
       WHERE ${conditions.join(' AND ')}
       GROUP BY d.period
       ORDER BY d.period_num DESC
-    `).all(...parameters).map((row: any) => {
+    `,
+      )
+      .all(...parameters) as SnapshotConflictRow[]
+    const rows = rawRows.map((row) => {
       const observations = JSON.parse(String(row.observations_json)) as Array<{
         observationId: number
         provider: string
@@ -1165,11 +1403,7 @@ export class Pl3Store {
       }>
       const dates = new Set(observations.map((item) => item.drawDate))
       const numbers = new Set(observations.map((item) => item.numbers))
-      const type: Pl3ConflictType = dates.size > 1 && numbers.size > 1
-        ? 'both'
-        : dates.size > 1
-          ? 'date'
-          : 'numbers'
+      const type: Pl3ConflictType = dates.size > 1 && numbers.size > 1 ? 'both' : dates.size > 1 ? 'date' : 'numbers'
       return {
         period: String(row.period),
         type,
@@ -1181,19 +1415,27 @@ export class Pl3Store {
   }
 
   getStatus(): Pl3StoreStatus {
-    const counts = this.database.prepare(`
+    const counts = this.database
+      .prepare(
+        `
       SELECT
         COUNT(*) AS total,
         SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed,
         SUM(CASE WHEN status = 'single_source' THEN 1 ELSE 0 END) AS single_source,
         SUM(CASE WHEN status = 'conflict' THEN 1 ELSE 0 END) AS conflict
       FROM draws
-    `).get() as { total: number; confirmed: number | null; single_source: number | null; conflict: number | null }
-    const latest = this.database.prepare(`
+    `,
+      )
+      .get() as { total: number; confirmed: number | null; single_source: number | null; conflict: number | null }
+    const latest = this.database
+      .prepare(
+        `
       SELECT period, draw_date FROM draws
       WHERE status IN ('confirmed', 'single_source')
       ORDER BY period_num DESC LIMIT 1
-    `).get() as { period: string; draw_date: string } | undefined
+    `,
+      )
+      .get() as { period: string; draw_date: string } | undefined
     const authoritativeTotal = normalizePositiveInteger(
       this.getMeta('authoritative_total:lottery-gov-cn') || this.getMeta('authoritative_total:zhcw'),
     )
@@ -1202,10 +1444,12 @@ export class Pl3Store {
     const conflict = Number(counts.conflict || 0)
     const total = Number(counts.total || 0)
     const usable = confirmed + singleSource
-    const legacyPredictionRow = this.database.prepare(
-      'SELECT COUNT(*) AS count FROM legacy_predictions',
-    ).get() as { count: number }
-    const dualSourceRow = this.database.prepare(`
+    const legacyPredictionRow = this.database.prepare('SELECT COUNT(*) AS count FROM legacy_predictions').get() as {
+      count: number
+    }
+    const dualSourceRow = this.database
+      .prepare(
+        `
       SELECT COUNT(*) AS count
       FROM draws d
       JOIN draw_observations selected ON selected.id = d.selected_observation_id
@@ -1224,7 +1468,9 @@ export class Pl3Store {
             AND fallback_source.draw_date = selected.draw_date
             AND fallback_source.numbers = selected.numbers
         )
-    `).get() as { count: number }
+    `,
+      )
+      .get() as { count: number }
 
     return {
       databasePath: this.databasePath,
@@ -1246,20 +1492,138 @@ export class Pl3Store {
   }
 
   listReferencedRawPaths() {
-    return (this.database.prepare(`
+    return (
+      this.database
+        .prepare(
+          `
       SELECT DISTINCT raw_path FROM source_snapshots
       WHERE raw_path IS NOT NULL AND raw_path <> ''
       ORDER BY raw_path
-    `).all() as Array<{ raw_path: string }>).map((row) => row.raw_path.replaceAll('\\', '/'))
+    `,
+        )
+        .all() as Array<{ raw_path: string }>
+    ).map((row) => row.raw_path.replaceAll('\\', '/'))
   }
 
-  createDatasetSnapshot(input: {
-    fromPeriod?: string
-    afterPeriod?: string
-    last?: number
-    allowSingleSource?: boolean
-    codeCommit?: string
-  } = {}): Pl3DatasetSnapshot {
+  getConfidenceByYear(): Pl3YearConfidence[] {
+    const rows = this.database
+      .prepare(
+        `
+      SELECT
+        substr(period, 1, 2) AS year,
+        COUNT(*) AS total_periods,
+        SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed,
+        SUM(CASE WHEN status = 'single_source' THEN 1 ELSE 0 END) AS single_source,
+        SUM(CASE WHEN status = 'conflict' THEN 1 ELSE 0 END) AS conflict
+      FROM draws
+      GROUP BY substr(period, 1, 2)
+      ORDER BY year ASC
+    `,
+      )
+      .all() as Array<{
+      year: string
+      total_periods: number
+      confirmed: number | null
+      single_source: number | null
+      conflict: number | null
+    }>
+
+    return rows.map((row) => {
+      const total = Number(row.total_periods)
+      const confirmed = Number(row.confirmed || 0)
+      return {
+        year: row.year,
+        totalPeriods: total,
+        confirmedRecords: confirmed,
+        singleSourceRecords: Number(row.single_source || 0),
+        conflictRecords: Number(row.conflict || 0),
+        dualSourceCoverage: total > 0 ? confirmed / total : null,
+      }
+    })
+  }
+
+  getDrawObservationEvidence(period: string): {
+    period: string
+    firstObservedAt: string | null
+    lastObservedAt: string | null
+    sourceCount: number | null
+  } | null {
+    const row = this.database
+      .prepare(
+        `
+      SELECT d.period,
+             MIN(o.first_observed_at) AS first_observed_at,
+             MAX(o.last_observed_at) AS last_observed_at,
+             COUNT(o.id) AS observation_count
+      FROM draws d
+      LEFT JOIN draw_observations o ON o.period = d.period
+      WHERE d.period = ?
+      GROUP BY d.period
+    `,
+      )
+      .get(period) as
+      | {
+          period: string
+          first_observed_at: string | null
+          last_observed_at: string | null
+          observation_count: number | null
+        }
+      | undefined
+    if (!row) return null
+    return {
+      period: row.period,
+      firstObservedAt: row.first_observed_at,
+      lastObservedAt: row.last_observed_at,
+      sourceCount: row.observation_count,
+    }
+  }
+
+  getPredictionSlaEvidence(prediction: { afterPeriod: string; generatedAt: string }): {
+    targetPeriod: string | null
+    predictedAt: string
+    firstObservedAt: string | null
+    predictedBeforeFirstObservation: boolean | null
+  } {
+    const targetRow = this.database
+      .prepare(
+        `
+      SELECT d.period, MIN(o.first_observed_at) AS first_observed_at
+      FROM draws d
+      LEFT JOIN draw_observations o ON o.period = d.period
+      WHERE d.status IN ('confirmed', 'single_source') AND d.period_num > ?
+      GROUP BY d.period
+      ORDER BY d.period_num ASC
+      LIMIT 1
+    `,
+      )
+      .get(toPeriodNumber(prediction.afterPeriod)) as { period: string; first_observed_at: string | null } | undefined
+    if (!targetRow) {
+      return {
+        targetPeriod: null,
+        predictedAt: prediction.generatedAt,
+        firstObservedAt: null,
+        predictedBeforeFirstObservation: null,
+      }
+    }
+    return {
+      targetPeriod: targetRow.period,
+      predictedAt: prediction.generatedAt,
+      firstObservedAt: targetRow.first_observed_at,
+      predictedBeforeFirstObservation: targetRow.first_observed_at
+        ? Date.parse(prediction.generatedAt) < Date.parse(targetRow.first_observed_at)
+        : null,
+    }
+  }
+
+  createDatasetSnapshot(
+    input: {
+      fromPeriod?: string
+      afterPeriod?: string
+      last?: number
+      allowSingleSource?: boolean
+      codeCommit?: string
+    } = {},
+  ): Pl3DatasetSnapshot {
     if (input.last !== undefined && (input.fromPeriod || input.afterPeriod)) {
       throw new Error('snapshot 的 last 与显式期号范围不能同时使用。')
     }
@@ -1269,11 +1633,15 @@ export class Pl3Store {
     if (input.last !== undefined) {
       if (!Number.isInteger(input.last) || input.last < 1) throw new Error('snapshot last 必须是正整数。')
       const statuses = allowSingleSource ? `('confirmed', 'single_source')` : `('confirmed')`
-      const boundaries = this.database.prepare(`
+      const boundaries = this.database
+        .prepare(
+          `
         SELECT period FROM draws
         WHERE status IN ${statuses} AND selected_observation_id IS NOT NULL
         ORDER BY period_num DESC LIMIT ?
-      `).all(input.last) as Array<{ period: string }>
+      `,
+        )
+        .all(input.last) as Array<{ period: string }>
       if (boundaries.length < input.last) {
         throw new Pl3PredictionError(
           'LOTTERYMCP_PL3_INSUFFICIENT_SNAPSHOT_DATA',
@@ -1295,9 +1663,9 @@ export class Pl3Store {
       parameters.push(toPeriodNumber(afterPeriod))
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
-    const conflicts = this.database.prepare(
-      `SELECT period FROM draws ${where ? `${where} AND` : 'WHERE'} status = 'conflict' ORDER BY period_num`,
-    ).all(...parameters) as Array<{ period: string }>
+    const conflicts = this.database
+      .prepare(`SELECT period FROM draws ${where ? `${where} AND` : 'WHERE'} status = 'conflict' ORDER BY period_num`)
+      .all(...parameters) as Array<{ period: string }>
     if (conflicts.length > 0) {
       throw new Pl3PredictionError(
         'LOTTERYMCP_PL3_DATA_CONFLICT',
@@ -1307,9 +1675,11 @@ export class Pl3Store {
     }
 
     if (!allowSingleSource) {
-      const singleSource = this.database.prepare(
-        `SELECT period FROM draws ${where ? `${where} AND` : 'WHERE'} status = 'single_source' ORDER BY period_num`,
-      ).all(...parameters) as Array<{ period: string }>
+      const singleSource = this.database
+        .prepare(
+          `SELECT period FROM draws ${where ? `${where} AND` : 'WHERE'} status = 'single_source' ORDER BY period_num`,
+        )
+        .all(...parameters) as Array<{ period: string }>
       if (singleSource.length > 0) {
         throw new Pl3PredictionError(
           'LOTTERYMCP_PL3_SINGLE_SOURCE_DATA',
@@ -1319,12 +1689,16 @@ export class Pl3Store {
       }
     }
 
-    const rows = this.database.prepare(`
+    const rows = this.database
+      .prepare(
+        `
       SELECT period, selected_observation_id AS observation_id, draw_date, numbers, status
       FROM draws
       ${where ? `${where} AND` : 'WHERE'} status IN (${allowSingleSource ? `'confirmed', 'single_source'` : `'confirmed'`})
       ORDER BY period_num ASC
-    `).all(...parameters) as Array<{
+    `,
+      )
+      .all(...parameters) as Array<{
       period: string
       observation_id: number
       draw_date: string
@@ -1333,43 +1707,53 @@ export class Pl3Store {
     }>
     if (rows.length === 0) throw new Error('没有可用于创建排列3数据快照的记录。')
 
-    const dataHash = sha256(canonicalize(rows.map((row) => ({
-      period: row.period,
-      drawDate: row.draw_date,
-      numbers: row.numbers,
-      observationId: row.observation_id,
-      status: row.status,
-    }))))
-    const snapshotId = sha256(canonicalize({
-      schemaVersion: 1,
-      dataHash,
-      fromPeriod: rows[0]!.period,
-      afterPeriod: rows.at(-1)!.period,
-      observations: rows.map((row) => row.observation_id),
-    }))
+    const dataHash = sha256(
+      canonicalize(
+        rows.map((row) => ({
+          period: row.period,
+          drawDate: row.draw_date,
+          numbers: row.numbers,
+          observationId: row.observation_id,
+          status: row.status,
+        })),
+      ),
+    )
+    const snapshotId = sha256(
+      canonicalize({
+        schemaVersion: 1,
+        dataHash,
+        fromPeriod: rows[0]!.period,
+        afterPeriod: rows.at(-1)!.period,
+        observations: rows.map((row) => row.observation_id),
+      }),
+    )
     const createdAt = new Date().toISOString()
     const confirmedCount = rows.filter((row) => row.status === 'confirmed').length
     const singleSourceCount = rows.length - confirmedCount
     const quality = allowSingleSource ? 'allow-single-source' : 'confirmed'
 
     this.database.transaction(() => {
-      this.database.prepare(`
+      this.database
+        .prepare(
+          `
         INSERT OR IGNORE INTO dataset_snapshots(
           snapshot_id, from_period, after_period, record_count, data_hash, code_commit,
           quality, confirmed_count, single_source_count, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        snapshotId,
-        rows[0]!.period,
-        rows.at(-1)!.period,
-        rows.length,
-        dataHash,
-        input.codeCommit || null,
-        quality,
-        confirmedCount,
-        singleSourceCount,
-        createdAt,
-      )
+      `,
+        )
+        .run(
+          snapshotId,
+          rows[0]!.period,
+          rows.at(-1)!.period,
+          rows.length,
+          dataHash,
+          input.codeCommit || null,
+          quality,
+          confirmedCount,
+          singleSourceCount,
+          createdAt,
+        )
       const insert = this.database.prepare(`
         INSERT OR IGNORE INTO dataset_snapshot_draws(snapshot_id, period, observation_id, draw_status, ordinal)
         VALUES (?, ?, ?, ?, ?)
@@ -1382,19 +1766,24 @@ export class Pl3Store {
   listDatasetSnapshots(query: { page?: number; limit?: number } = {}) {
     const page = Math.max(1, Math.floor(Number(query.page) || 1))
     const limit = Math.max(1, Math.min(100, Math.floor(Number(query.limit) || 20)))
-    return (this.database.prepare(`
+    return (
+      this.database
+        .prepare(
+          `
       SELECT * FROM dataset_snapshots ORDER BY created_at DESC LIMIT ? OFFSET ?
-    `).all(limit, (page - 1) * limit) as any[]).map((row) => this.toDatasetSnapshot(row))
+    `,
+        )
+        .all(limit, (page - 1) * limit) as DatasetSnapshotRow[]
+    ).map((row) => this.toDatasetSnapshot(row))
   }
 
   getDatasetSnapshot(snapshotId: string): Pl3DatasetSnapshot | null {
-    const row = this.database.prepare(
-      'SELECT * FROM dataset_snapshots WHERE snapshot_id = ?',
-    ).get(snapshotId) as any
+    const row = this.database.prepare('SELECT * FROM dataset_snapshots WHERE snapshot_id = ?').get(snapshotId) as
+      DatasetSnapshotRow | undefined
     return row ? this.toDatasetSnapshot(row) : null
   }
 
-  private toDatasetSnapshot(row: any): Pl3DatasetSnapshot {
+  private toDatasetSnapshot(row: DatasetSnapshotRow): Pl3DatasetSnapshot {
     return {
       snapshotId: String(row.snapshot_id),
       fromPeriod: String(row.from_period),
@@ -1418,14 +1807,18 @@ export class Pl3Store {
       throw new Error(`afterPeriod ${afterPeriod} 超出 snapshot 截止期号 ${snapshot.afterPeriod}。`)
     }
     if (cutoff !== null) parameters.push(cutoff)
-    const rows = this.database.prepare(`
+    const rows = this.database
+      .prepare(
+        `
       SELECT o.id, o.period, o.period_num, o.draw_date, o.d1, o.d2, o.d3, o.numbers,
              o.provider, o.source_url, o.last_observed_at, sd.draw_status
       FROM dataset_snapshot_draws sd
       JOIN draw_observations o ON o.id = sd.observation_id
       WHERE sd.snapshot_id = ? ${cutoff === null ? '' : 'AND o.period_num <= ?'}
       ORDER BY sd.ordinal ASC
-    `).all(...parameters) as any[]
+    `,
+      )
+      .all(...parameters) as DatasetSnapshotDrawRow[]
     return rows.map((row) => ({
       lotteryType: PL3_LOTTERY_TYPE,
       period: String(row.period),
@@ -1444,13 +1837,17 @@ export class Pl3Store {
     const snapshot = this.getDatasetSnapshot(snapshotId)
     if (!snapshot) throw new Error(`排列3数据 snapshot 不存在: ${snapshotId}`)
     const records = this.getDatasetSnapshotRecords(snapshotId)
-    const actualDataHash = sha256(canonicalize(records.map((record) => ({
-      period: record.period,
-      drawDate: record.drawDate,
-      numbers: record.numbers,
-      observationId: record.observationId,
-      status: record.status,
-    }))))
+    const actualDataHash = sha256(
+      canonicalize(
+        records.map((record) => ({
+          period: record.period,
+          drawDate: record.drawDate,
+          numbers: record.numbers,
+          observationId: record.observationId,
+          status: record.status,
+        })),
+      ),
+    )
     return {
       snapshotId,
       valid: records.length === snapshot.recordCount && actualDataHash === snapshot.dataHash,
@@ -1465,71 +1862,86 @@ export class Pl3Store {
     if (this.getSchemaVersion() < 2) {
       throw new Error('排列3数据库尚未应用 M002，请先运行 data migrate --apply。')
     }
-    const row = this.database.prepare(
-      'SELECT * FROM feature_snapshots WHERE feature_snapshot_id = ?',
-    ).get(featureSnapshotId) as any
-    return row ? {
-      featureSnapshotId: String(row.feature_snapshot_id),
-      datasetSnapshotId: String(row.dataset_snapshot_id),
-      afterPeriod: String(row.after_period),
-      featureVersion: String(row.feature_version),
-      windowsJson: String(row.windows_json),
-      windowConfigHash: String(row.window_config_hash),
-      payloadGzip: Buffer.from(row.payload_gzip),
-      payloadHash: String(row.payload_hash),
-      codeCommit: row.code_commit == null ? null : String(row.code_commit),
-      createdAt: String(row.created_at),
-    } : null
+    const row = this.database
+      .prepare('SELECT * FROM feature_snapshots WHERE feature_snapshot_id = ?')
+      .get(featureSnapshotId) as FeatureSnapshotRow | undefined
+    return row
+      ? {
+          featureSnapshotId: String(row.feature_snapshot_id),
+          datasetSnapshotId: String(row.dataset_snapshot_id),
+          afterPeriod: String(row.after_period),
+          featureVersion: String(row.feature_version),
+          windowsJson: String(row.windows_json),
+          windowConfigHash: String(row.window_config_hash),
+          payloadGzip: Buffer.from(row.payload_gzip),
+          payloadHash: String(row.payload_hash),
+          codeCommit: row.code_commit == null ? null : String(row.code_commit),
+          createdAt: String(row.created_at),
+        }
+      : null
   }
 
   saveFeatureSnapshot(input: Pl3FeatureSnapshotStorageRecord) {
     if (this.getSchemaVersion() < 2) {
       throw new Error('排列3数据库尚未应用 M002，请先运行 data migrate --apply。')
     }
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       INSERT OR IGNORE INTO feature_snapshots(
         feature_snapshot_id, dataset_snapshot_id, after_period, feature_version,
         windows_json, window_config_hash, payload_gzip, payload_hash, code_commit, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      input.featureSnapshotId,
-      input.datasetSnapshotId,
-      input.afterPeriod,
-      input.featureVersion,
-      input.windowsJson,
-      input.windowConfigHash,
-      input.payloadGzip,
-      input.payloadHash,
-      input.codeCommit,
-      input.createdAt,
-    )
+    `,
+      )
+      .run(
+        input.featureSnapshotId,
+        input.datasetSnapshotId,
+        input.afterPeriod,
+        input.featureVersion,
+        input.windowsJson,
+        input.windowConfigHash,
+        input.payloadGzip,
+        input.payloadHash,
+        input.codeCommit,
+        input.createdAt,
+      )
     return this.getFeatureSnapshot(input.featureSnapshotId)!
   }
 
-  registerExperiment(input: Omit<Pl3ExperimentStorageRecord, 'status' | 'reportPath' | 'reportHash' | 'errorMessage' | 'createdAt' | 'updatedAt'>) {
+  registerExperiment(
+    input: Omit<
+      Pl3ExperimentStorageRecord,
+      'status' | 'reportPath' | 'reportHash' | 'errorMessage' | 'createdAt' | 'updatedAt'
+    >,
+  ) {
     if (this.getSchemaVersion() < 2) throw new Error('排列3数据库尚未应用 M002。')
     const now = new Date().toISOString()
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       INSERT OR IGNORE INTO experiments(
         experiment_id, schema_version, name, mode, research_batch_id, dataset_snapshot_id,
         feature_version, spec_json, spec_hash, code_commit, random_seed, status,
         report_path, report_hash, error_message, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', NULL, NULL, NULL, ?, ?)
-    `).run(
-      input.experimentId,
-      input.schemaVersion,
-      input.name,
-      input.mode,
-      input.researchBatchId,
-      input.datasetSnapshotId,
-      input.featureVersion,
-      input.specJson,
-      input.specHash,
-      input.codeCommit,
-      input.randomSeed,
-      now,
-      now,
-    )
+    `,
+      )
+      .run(
+        input.experimentId,
+        input.schemaVersion,
+        input.name,
+        input.mode,
+        input.researchBatchId,
+        input.datasetSnapshotId,
+        input.featureVersion,
+        input.specJson,
+        input.specHash,
+        input.codeCommit,
+        input.randomSeed,
+        now,
+        now,
+      )
     const stored = this.getExperiment(input.experimentId)!
     if (stored.specHash !== input.specHash || stored.codeCommit !== input.codeCommit) {
       throw new Error(`experimentId ${input.experimentId} 已绑定不同 spec。`)
@@ -1537,7 +1949,7 @@ export class Pl3Store {
     return stored
   }
 
-  private toExperiment(row: any): Pl3ExperimentStorageRecord {
+  private toExperiment(row: ExperimentRow): Pl3ExperimentStorageRecord {
     return {
       experimentId: String(row.experiment_id),
       schemaVersion: Number(row.schema_version),
@@ -1561,7 +1973,8 @@ export class Pl3Store {
 
   getExperiment(experimentId: string): Pl3ExperimentStorageRecord | null {
     if (this.getSchemaVersion() < 2) throw new Error('排列3数据库尚未应用 M002。')
-    const row = this.database.prepare('SELECT * FROM experiments WHERE experiment_id = ?').get(experimentId)
+    const row = this.database.prepare('SELECT * FROM experiments WHERE experiment_id = ?').get(experimentId) as
+      ExperimentRow | undefined
     return row ? this.toExperiment(row) : null
   }
 
@@ -1570,13 +1983,21 @@ export class Pl3Store {
     const page = Math.max(1, Math.floor(Number(query.page) || 1))
     const limit = Math.max(1, Math.min(100, Math.floor(Number(query.limit) || 20)))
     const rows = query.status
-      ? this.database.prepare(`
+      ? this.database
+          .prepare(
+            `
           SELECT * FROM experiments WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?
-        `).all(query.status, limit, (page - 1) * limit)
-      : this.database.prepare(`
+        `,
+          )
+          .all(query.status, limit, (page - 1) * limit)
+      : this.database
+          .prepare(
+            `
           SELECT * FROM experiments ORDER BY created_at DESC LIMIT ? OFFSET ?
-        `).all(limit, (page - 1) * limit)
-    return (rows as any[]).map((row) => this.toExperiment(row))
+        `,
+          )
+          .all(limit, (page - 1) * limit)
+    return (rows as ExperimentRow[]).map((row) => this.toExperiment(row))
   }
 
   updateExperimentStatus(
@@ -1589,21 +2010,31 @@ export class Pl3Store {
     if (input.expected && !input.expected.includes(current.status)) {
       throw new Error(`实验 ${experimentId} 当前状态 ${current.status}，不能切换为 ${status}。`)
     }
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       UPDATE experiments SET status = ?, error_message = ?, updated_at = ? WHERE experiment_id = ?
-    `).run(status, input.errorMessage ?? null, new Date().toISOString(), experimentId)
+    `,
+      )
+      .run(status, input.errorMessage ?? null, new Date().toISOString(), experimentId)
     return this.getExperiment(experimentId)!
   }
 
   saveExperimentFold(input: Pl3ExperimentFoldStorageRecord) {
-    const existing = this.database.prepare(`
+    const existing = this.database
+      .prepare(
+        `
       SELECT status FROM experiment_folds
       WHERE experiment_id = ? AND fold_level = ? AND fold_index = ?
-    `).get(input.experimentId, input.foldLevel, input.foldIndex) as { status: string } | undefined
+    `,
+      )
+      .get(input.experimentId, input.foldLevel, input.foldIndex) as { status: string } | undefined
     if (existing?.status === 'complete') {
       throw new Error(`已完成实验折不可覆盖: ${input.foldLevel}/${input.foldIndex}`)
     }
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       INSERT INTO experiment_folds(
         experiment_id, fold_level, fold_index, train_from_period, train_to_period,
         test_from_period, test_to_period, status, selected_params_json, metrics_json,
@@ -1621,33 +2052,43 @@ export class Pl3Store {
         result_hash = excluded.result_hash,
         started_at = excluded.started_at,
         completed_at = excluded.completed_at
-    `).run(
-      input.experimentId,
-      input.foldLevel,
-      input.foldIndex,
-      input.trainFromPeriod,
-      input.trainToPeriod,
-      input.testFromPeriod,
-      input.testToPeriod,
-      input.status,
-      input.selectedParamsJson,
-      input.metricsJson,
-      input.resultPath,
-      input.resultHash,
-      input.startedAt,
-      input.completedAt,
-    )
+    `,
+      )
+      .run(
+        input.experimentId,
+        input.foldLevel,
+        input.foldIndex,
+        input.trainFromPeriod,
+        input.trainToPeriod,
+        input.testFromPeriod,
+        input.testToPeriod,
+        input.status,
+        input.selectedParamsJson,
+        input.metricsJson,
+        input.resultPath,
+        input.resultHash,
+        input.startedAt,
+        input.completedAt,
+      )
   }
 
   listExperimentFolds(experimentId: string, foldLevel?: Pl3ExperimentFoldStorageRecord['foldLevel']) {
     const rows = foldLevel
-      ? this.database.prepare(`
+      ? this.database
+          .prepare(
+            `
           SELECT * FROM experiment_folds WHERE experiment_id = ? AND fold_level = ? ORDER BY fold_index
-        `).all(experimentId, foldLevel)
-      : this.database.prepare(`
+        `,
+          )
+          .all(experimentId, foldLevel)
+      : this.database
+          .prepare(
+            `
           SELECT * FROM experiment_folds WHERE experiment_id = ? ORDER BY fold_level, fold_index
-        `).all(experimentId)
-    return (rows as any[]).map((row): Pl3ExperimentFoldStorageRecord => ({
+        `,
+          )
+          .all(experimentId)
+    return (rows as ExperimentFoldRow[]).map((row): Pl3ExperimentFoldStorageRecord => ({
       experimentId: String(row.experiment_id),
       foldLevel: row.fold_level,
       foldIndex: Number(row.fold_index),
@@ -1670,45 +2111,65 @@ export class Pl3Store {
     foldLevel: string
     foldIndex: number
     modelId: string
-    metrics: Array<{ name: string; role: 'primary' | 'secondary' | 'exploratory'; segment?: string; value: number; sampleCount: number }>
+    metrics: Array<{
+      name: string
+      role: 'primary' | 'secondary' | 'exploratory'
+      segment?: string
+      value: number
+      sampleCount: number
+    }>
   }) {
-    const fold = this.database.prepare(`
+    const fold = this.database
+      .prepare(
+        `
       SELECT status FROM experiment_folds
       WHERE experiment_id = ? AND fold_level = ? AND fold_index = ?
-    `).get(input.experimentId, input.foldLevel, input.foldIndex) as { status: string } | undefined
+    `,
+      )
+      .get(input.experimentId, input.foldLevel, input.foldIndex) as { status: string } | undefined
     if (fold?.status === 'complete') {
       throw new Error(`已完成实验折的指标不可覆盖: ${input.foldLevel}/${input.foldIndex}`)
     }
     this.database.transaction(() => {
-      this.database.prepare(`
+      this.database
+        .prepare(
+          `
         DELETE FROM experiment_metrics
         WHERE experiment_id = ? AND fold_level = ? AND fold_index = ? AND model_id = ?
-      `).run(input.experimentId, input.foldLevel, input.foldIndex, input.modelId)
+      `,
+        )
+        .run(input.experimentId, input.foldLevel, input.foldIndex, input.modelId)
       const insert = this.database.prepare(`
         INSERT INTO experiment_metrics(
           experiment_id, fold_level, fold_index, model_id, metric_name,
           metric_role, segment, value, sample_count
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      input.metrics.forEach((metric) => insert.run(
-        input.experimentId,
-        input.foldLevel,
-        input.foldIndex,
-        input.modelId,
-        metric.name,
-        metric.role,
-        metric.segment || 'all',
-        metric.value,
-        metric.sampleCount,
-      ))
+      input.metrics.forEach((metric) =>
+        insert.run(
+          input.experimentId,
+          input.foldLevel,
+          input.foldIndex,
+          input.modelId,
+          metric.name,
+          metric.role,
+          metric.segment || 'all',
+          metric.value,
+          metric.sampleCount,
+        ),
+      )
     })()
   }
 
   getExperimentMetrics(experimentId: string) {
-    return this.database.prepare(`
+    return this.database
+      .prepare(
+        `
       SELECT * FROM experiment_metrics WHERE experiment_id = ?
       ORDER BY fold_level, fold_index, model_id, metric_name
-    `).all(experimentId)
+    `,
+      )
+      .all(experimentId)
   }
 
   acquireRuntimeLock(lockName: string, ownerId: string, leaseMs = 120_000) {
@@ -1717,18 +2178,26 @@ export class Pl3Store {
     const expiresAt = new Date(now + leaseMs).toISOString()
     return this.database.transaction(() => {
       this.database.prepare('DELETE FROM runtime_locks WHERE expires_at <= ?').run(acquiredAt)
-      const result = this.database.prepare(`
+      const result = this.database
+        .prepare(
+          `
         INSERT OR IGNORE INTO runtime_locks(lock_name, owner_id, owner_pid, acquired_at, expires_at)
         VALUES (?, ?, ?, ?, ?)
-      `).run(lockName, ownerId, process.pid, acquiredAt, expiresAt)
+      `,
+        )
+        .run(lockName, ownerId, process.pid, acquiredAt, expiresAt)
       return result.changes === 1
     })()
   }
 
   renewRuntimeLock(lockName: string, ownerId: string, leaseMs = 120_000) {
-    const result = this.database.prepare(`
+    const result = this.database
+      .prepare(
+        `
       UPDATE runtime_locks SET expires_at = ? WHERE lock_name = ? AND owner_id = ?
-    `).run(new Date(Date.now() + leaseMs).toISOString(), lockName, ownerId)
+    `,
+      )
+      .run(new Date(Date.now() + leaseMs).toISOString(), lockName, ownerId)
     if (result.changes !== 1) throw new Error(`实验运行锁 ${lockName} 已丢失。`)
   }
 
@@ -1737,27 +2206,39 @@ export class Pl3Store {
   }
 
   listRuntimeLocks() {
-    return this.database.prepare('SELECT * FROM runtime_locks ORDER BY lock_name').all()
+    return this.database.prepare('SELECT * FROM runtime_locks ORDER BY lock_name').all() as RuntimeLockRow[]
   }
 
   addExperimentAudit(experimentId: string, action: string, status: string, details: unknown = {}) {
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       INSERT INTO experiment_audit(experiment_id, action, status, details_json, created_at)
       VALUES (?, ?, ?, ?, ?)
-    `).run(experimentId, action, status, canonicalize(details), new Date().toISOString())
+    `,
+      )
+      .run(experimentId, action, status, canonicalize(details), new Date().toISOString())
   }
 
   listExperimentAudit(experimentId: string) {
-    return this.database.prepare(`
+    return this.database
+      .prepare(
+        `
       SELECT audit_id, action, status, details_json, created_at
       FROM experiment_audit WHERE experiment_id = ? ORDER BY audit_id
-    `).all(experimentId)
+    `,
+      )
+      .all(experimentId) as ExperimentAuditRow[]
   }
 
   setExperimentReport(experimentId: string, reportPath: string, reportHash: string) {
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       UPDATE experiments SET report_path = ?, report_hash = ?, updated_at = ? WHERE experiment_id = ?
-    `).run(reportPath, reportHash, new Date().toISOString(), experimentId)
+    `,
+      )
+      .run(reportPath, reportHash, new Date().toISOString(), experimentId)
     return this.getExperiment(experimentId)!
   }
 
@@ -1776,7 +2257,9 @@ export class Pl3Store {
   }) {
     if (this.getSchemaVersion() < 3) throw new Error('排列3数据库尚未应用 M003。')
     const startedAt = input.startedAt || new Date().toISOString()
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       INSERT INTO online_prediction_runs(
         run_id, prediction_id, status, data_mode, after_period, target_period,
         report_path, report_hash, error_message, started_at, completed_at
@@ -1791,37 +2274,46 @@ export class Pl3Store {
         report_hash = excluded.report_hash,
         error_message = excluded.error_message,
         completed_at = excluded.completed_at
-    `).run(
-      input.runId,
-      input.predictionId || null,
-      input.status,
-      input.dataMode,
-      input.afterPeriod || null,
-      input.targetPeriod || null,
-      input.reportPath || null,
-      input.reportHash || null,
-      input.errorMessage || null,
-      startedAt,
-      input.completedAt || null,
-    )
+    `,
+      )
+      .run(
+        input.runId,
+        input.predictionId || null,
+        input.status,
+        input.dataMode,
+        input.afterPeriod || null,
+        input.targetPeriod || null,
+        input.reportPath || null,
+        input.reportHash || null,
+        input.errorMessage || null,
+        startedAt,
+        input.completedAt || null,
+      )
     return this.getOnlinePredictionRun(input.runId)!
   }
 
   getOnlinePredictionRun(runId: string): Pl3OnlinePredictionRun | null {
     if (this.getSchemaVersion() < 3) throw new Error('排列3数据库尚未应用 M003。')
-    const row = this.database.prepare('SELECT * FROM online_prediction_runs WHERE run_id = ?').get(runId) as any
+    const row = this.database.prepare('SELECT * FROM online_prediction_runs WHERE run_id = ?').get(runId) as
+      OnlinePredictionRunRow | undefined
     return row ? this.toOnlinePredictionRun(row) : null
   }
 
   listOnlinePredictionRuns(query: { limit?: number } = {}) {
     if (this.getSchemaVersion() < 3) throw new Error('排列3数据库尚未应用 M003。')
     const limit = Math.max(1, Math.min(100, Math.floor(Number(query.limit) || 20)))
-    return (this.database.prepare(`
+    return (
+      this.database
+        .prepare(
+          `
       SELECT * FROM online_prediction_runs ORDER BY started_at DESC LIMIT ?
-    `).all(limit) as any[]).map((row) => this.toOnlinePredictionRun(row))
+    `,
+        )
+        .all(limit) as OnlinePredictionRunRow[]
+    ).map((row) => this.toOnlinePredictionRun(row))
   }
 
-  private toOnlinePredictionRun(row: any): Pl3OnlinePredictionRun {
+  private toOnlinePredictionRun(row: OnlinePredictionRunRow): Pl3OnlinePredictionRun {
     return {
       runId: String(row.run_id),
       predictionId: row.prediction_id == null ? null : String(row.prediction_id),
@@ -1844,25 +2336,29 @@ export class Pl3Store {
     details?: Record<string, unknown>
   }) {
     if (this.getSchemaVersion() < 3) throw new Error('排列3数据库尚未应用 M003。')
-    const result = this.database.prepare(`
+    const result = this.database
+      .prepare(
+        `
       INSERT INTO operational_events(level, event_type, message, details_json, created_at)
       VALUES (?, ?, ?, ?, ?)
-    `).run(
-      input.level,
-      input.eventType,
-      input.message,
-      canonicalize(input.details || {}),
-      new Date().toISOString(),
-    )
+    `,
+      )
+      .run(input.level, input.eventType, input.message, canonicalize(input.details || {}), new Date().toISOString())
     return Number(result.lastInsertRowid)
   }
 
   listOperationalEvents(query: { limit?: number } = {}): Pl3OperationalEvent[] {
     if (this.getSchemaVersion() < 3) throw new Error('排列3数据库尚未应用 M003。')
     const limit = Math.max(1, Math.min(200, Math.floor(Number(query.limit) || 50)))
-    return (this.database.prepare(`
+    return (
+      this.database
+        .prepare(
+          `
       SELECT * FROM operational_events ORDER BY event_id DESC LIMIT ?
-    `).all(limit) as any[]).map((row) => ({
+    `,
+        )
+        .all(limit) as OperationalEventRow[]
+    ).map((row) => ({
       eventId: Number(row.event_id),
       level: row.level,
       eventType: String(row.event_type),
@@ -1881,7 +2377,9 @@ export class Pl3Store {
     errorMessage?: string | null
   }) {
     if (this.getSchemaVersion() < 3) throw new Error('排列3数据库尚未应用 M003。')
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       INSERT INTO notification_deliveries(
         channel, dedupe_key, status, target, message_hash, error_message, delivered_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1891,23 +2389,31 @@ export class Pl3Store {
         message_hash = excluded.message_hash,
         error_message = excluded.error_message,
         delivered_at = excluded.delivered_at
-    `).run(
-      input.channel,
-      input.dedupeKey,
-      input.status,
-      input.target || null,
-      input.messageHash,
-      input.errorMessage || null,
-      new Date().toISOString(),
-    )
+    `,
+      )
+      .run(
+        input.channel,
+        input.dedupeKey,
+        input.status,
+        input.target || null,
+        input.messageHash,
+        input.errorMessage || null,
+        new Date().toISOString(),
+      )
   }
 
   listNotificationDeliveries(query: { limit?: number } = {}): Pl3NotificationDelivery[] {
     if (this.getSchemaVersion() < 3) throw new Error('排列3数据库尚未应用 M003。')
     const limit = Math.max(1, Math.min(100, Math.floor(Number(query.limit) || 20)))
-    return (this.database.prepare(`
+    return (
+      this.database
+        .prepare(
+          `
       SELECT * FROM notification_deliveries ORDER BY delivery_id DESC LIMIT ?
-    `).all(limit) as any[]).map((row) => ({
+    `,
+        )
+        .all(limit) as NotificationDeliveryRow[]
+    ).map((row) => ({
       deliveryId: Number(row.delivery_id),
       channel: String(row.channel),
       dedupeKey: String(row.dedupe_key),
@@ -1943,20 +2449,20 @@ export const resolvePl3DatabasePath = (dataDir = DEFAULT_DATA_DIR) =>
 
 export const hasPl3Database = (dataDir = DEFAULT_DATA_DIR) => existsSync(resolvePl3DatabasePath(dataDir))
 
-export const openPl3Store = (options: {
-  dataDir?: string
-  databasePath?: string
-  readonly?: boolean
-  fileMustExist?: boolean
-  maintenance?: boolean
-} = {}) => new Pl3Store(
-  options.databasePath || resolvePl3DatabasePath(options.dataDir),
-  {
+export const openPl3Store = (
+  options: {
+    dataDir?: string
+    databasePath?: string
+    readonly?: boolean
+    fileMustExist?: boolean
+    maintenance?: boolean
+  } = {},
+) =>
+  new Pl3Store(options.databasePath || resolvePl3DatabasePath(options.dataDir), {
     readonly: options.readonly,
     fileMustExist: options.fileMustExist,
     maintenance: options.maintenance,
-  },
-)
+  })
 
 const readLegacyHistory = async (historyPath: string) => {
   if (!existsSync(historyPath)) return []
@@ -2006,11 +2512,11 @@ const withMaintenanceLock = async <T>(dataDir: string, task: () => Promise<T>) =
   try {
     try {
       handle = await open(lockPath, 'wx')
-    } catch (error: any) {
-      if (error?.code !== 'EEXIST') throw error
+    } catch (error) {
+      if ((error as { code?: string })?.code !== 'EEXIST') throw error
       const info = await stat(lockPath)
       if (Date.now() - info.mtimeMs <= MAINTENANCE_LOCK_MAX_AGE_MS) {
-        throw new Error('排列3数据库正在执行维护操作，请稍后重试。')
+        throw new Error('排列3数据库正在执行维护操作，请稍后重试。', { cause: error })
       }
       await unlink(lockPath)
       handle = await open(lockPath, 'wx')
@@ -2041,16 +2547,21 @@ export const applyLegacyPl3Migration = async (dataDir = DEFAULT_DATA_DIR): Promi
   return withMaintenanceLock(preview.dataDir, async () => {
     const refreshed = await previewLegacyPl3Migration(preview.dataDir)
     if (refreshed.databaseExists) throw new Error(`排列3数据库已存在，拒绝覆盖: ${refreshed.databasePath}`)
-    if (refreshed.recordHash !== preview.recordHash || refreshed.predictionIds.join('|') !== preview.predictionIds.join('|')) {
+    if (
+      refreshed.recordHash !== preview.recordHash ||
+      refreshed.predictionIds.join('|') !== preview.predictionIds.join('|')
+    ) {
       throw new Error('迁移预检后旧 JSON 已发生变化，请重新执行 dry-run。')
     }
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
     const backupDir = path.join(preview.dataDir, 'backups')
-    const backupPaths = (await Promise.all([
-      backupLegacyFile(preview.historyPath, backupDir, stamp),
-      backupLegacyFile(preview.ledgerPath, backupDir, stamp),
-    ])).filter((item): item is string => Boolean(item))
+    const backupPaths = (
+      await Promise.all([
+        backupLegacyFile(preview.historyPath, backupDir, stamp),
+        backupLegacyFile(preview.ledgerPath, backupDir, stamp),
+      ])
+    ).filter((item): item is string => Boolean(item))
     const stagingPath = `${preview.databasePath}.migrating-${stamp}`
     let store: Pl3Store | undefined
 
@@ -2142,9 +2653,10 @@ export const previewPl3SchemaMigration = (dataDir = DEFAULT_DATA_DIR): Pl3Schema
   if (!existsSync(databasePath)) throw new Error(`排列3数据库不存在: ${databasePath}`)
   const database = new Database(databasePath, { readonly: true, fileMustExist: true })
   try {
-    const rows = database.prepare(
-      'SELECT version, checksum FROM schema_migrations ORDER BY version',
-    ).all() as Array<{ version: number; checksum: string }>
+    const rows = database.prepare('SELECT version, checksum FROM schema_migrations ORDER BY version').all() as Array<{
+      version: number
+      checksum: string
+    }>
     const currentVersion = rows.at(-1)?.version || 0
     const migration001 = rows.find((row) => row.version === 1)
     if (!migration001 || migration001.checksum !== migration001Checksum) {
@@ -2198,9 +2710,9 @@ export const applyPl3SchemaMigration = async (dataDir = DEFAULT_DATA_DIR) => {
       staging.transaction(() => {
         for (const migration of schemaMigrations.filter((item) => item.version > refreshed.currentVersion)) {
           staging!.exec(migration.sql)
-          staging!.prepare(
-            'INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)',
-          ).run(migration.version, migration.name, migration.checksum, new Date().toISOString())
+          staging!
+            .prepare('INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)')
+            .run(migration.version, migration.name, migration.checksum, new Date().toISOString())
         }
       })()
       const integrity = staging.pragma('integrity_check', { simple: true })
@@ -2216,7 +2728,10 @@ export const applyPl3SchemaMigration = async (dataDir = DEFAULT_DATA_DIR) => {
         current.exec('BEGIN EXCLUSIVE')
         current.exec('ROLLBACK')
       } catch (error) {
-        throw new Error(`排列3数据库仍在使用，无法应用 M002: ${error instanceof Error ? error.message : String(error)}`)
+        throw new Error(
+          `排列3数据库仍在使用，无法应用 M002: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        )
       } finally {
         current.close()
       }
@@ -2283,7 +2798,9 @@ export const restorePl3Database = async (dataDir: string, backupPath: string) =>
         current.exec('BEGIN EXCLUSIVE')
         current.exec('ROLLBACK')
       } catch (error) {
-        throw new Error(`排列3数据库仍在使用，无法恢复: ${error instanceof Error ? error.message : String(error)}`)
+        throw new Error(`排列3数据库仍在使用，无法恢复: ${error instanceof Error ? error.message : String(error)}`, {
+          cause: error,
+        })
       } finally {
         current.close()
       }

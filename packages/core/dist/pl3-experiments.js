@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { PL3_FEATURE_VERSION, createPl3FeatureSnapshot, } from './pl3-features.js';
-import { PL3_MODEL_VERSION, scorePl3TicketPools, writeJsonAtomically, } from './pl3-prediction.js';
+import { PL3_FEATURE_VERSION, createPl3FeatureSnapshot } from './pl3-features.js';
+import { PL3_MODEL_VERSION, scorePl3TicketPools, writeJsonAtomically } from './pl3-prediction.js';
 export const PL3_EXPERIMENT_SPEC_VERSION = 1;
 const DEFAULT_SECONDARY_METRICS = [
     'normalizedRank.median',
@@ -30,9 +30,7 @@ const canonicalize = (value) => {
 };
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const round = (value) => Number(value.toFixed(12));
-const mean = (values) => values.length > 0
-    ? values.reduce((total, value) => total + value, 0) / values.length
-    : 0;
+const mean = (values) => values.length > 0 ? values.reduce((total, value) => total + value, 0) / values.length : 0;
 const median = (values) => {
     if (values.length === 0)
         return 0;
@@ -71,7 +69,8 @@ export const normalizePl3ExperimentSpec = (input) => {
         throw new Error(`不支持的实验模式: ${mode}`);
     const allowedModels = new Set(['uniform-theory', 'random-monte-carlo', PL3_MODEL_VERSION]);
     const rawModels = input.models?.length ? input.models : [PL3_MODEL_VERSION];
-    const models = rawModels.map((item) => {
+    const models = rawModels
+        .map((item) => {
         const rawModelId = typeof item === 'string' ? item : item.modelId;
         if (!allowedModels.has(rawModelId)) {
             throw new Error(`不支持的排列3实验模型: ${rawModelId}`);
@@ -84,7 +83,9 @@ export const normalizePl3ExperimentSpec = (input) => {
             const rawHistoryWindows = searchSpace.historyWindow || [];
             if (!Array.isArray(rawHistoryWindows))
                 throw new Error('searchSpace.historyWindow 必须是数组。');
-            searchSpace.historyWindow = [...new Set(rawHistoryWindows.map((value) => normalizeInteger(value, 200, 100, 1000, 'searchSpace.historyWindow')))].sort((left, right) => Number(left) - Number(right));
+            searchSpace.historyWindow = [
+                ...new Set(rawHistoryWindows.map((value) => normalizeInteger(value, 200, 100, 1000, 'searchSpace.historyWindow'))),
+            ].sort((left, right) => Number(left) - Number(right));
             const unknownKeys = Object.keys(searchSpace).filter((key) => key !== 'historyWindow');
             if (unknownKeys.length > 0)
                 throw new Error(`weighted-frequency-v1 不支持搜索参数: ${unknownKeys.join(', ')}`);
@@ -93,7 +94,8 @@ export const normalizePl3ExperimentSpec = (input) => {
             throw new Error(`基线模型 ${modelId} 不接受参数搜索空间。`);
         }
         return { modelId, params, searchSpace };
-    }).sort((left, right) => left.modelId.localeCompare(right.modelId));
+    })
+        .sort((left, right) => left.modelId.localeCompare(right.modelId));
     if (new Set(models.map((item) => item.modelId)).size !== models.length) {
         throw new Error('同一 experiment spec 不能重复声明模型。');
     }
@@ -111,7 +113,9 @@ export const normalizePl3ExperimentSpec = (input) => {
         models,
         primaryMetric: 'normalizedRank.mean',
         secondaryMetrics: [...new Set(input.secondaryMetrics || DEFAULT_SECONDARY_METRICS)].sort(),
-        exclusionRules: [...new Set((input.exclusionRules || []).map((rule) => String(rule).trim()).filter(Boolean))].sort(),
+        exclusionRules: [
+            ...new Set((input.exclusionRules || []).map((rule) => String(rule).trim()).filter(Boolean)),
+        ].sort(),
         split: {
             minTrain: normalizeInteger(input.split?.minTrain, 1000, 1000, 10000, 'split.minTrain'),
             frozenCount: normalizeInteger(input.split?.frozenCount, 1000, 1000, 10000, 'split.frozenCount'),
@@ -175,9 +179,9 @@ const seededRandom = (seed) => {
     return () => {
         state += 0x6d2b79f5;
         let value = state;
-        value = Math.imul(value ^ value >>> 15, value | 1);
-        value ^= value + Math.imul(value ^ value >>> 7, value | 61);
-        return ((value ^ value >>> 14) >>> 0) / 4294967296;
+        value = Math.imul(value ^ (value >>> 15), value | 1);
+        value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+        return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
     };
 };
 const stringSeed = (base, value) => {
@@ -189,11 +193,10 @@ const NUMBER_STATES = allNumbers();
 const modelCandidates = (model) => {
     if (model.modelId !== PL3_MODEL_VERSION)
         return [{ ...model, params: { ...model.params }, searchSpace: {} }];
-    const windows = [
-        Number(model.params.historyWindow),
-        ...(model.searchSpace.historyWindow || []).map(Number),
-    ];
-    return [...new Set(windows)].sort((left, right) => left - right).map((historyWindow) => ({
+    const windows = [Number(model.params.historyWindow), ...(model.searchSpace.historyWindow || []).map(Number)];
+    return [...new Set(windows)]
+        .sort((left, right) => left - right)
+        .map((historyWindow) => ({
         modelId: model.modelId,
         params: { ...model.params, historyWindow },
         searchSpace: {},
@@ -336,13 +339,20 @@ const evaluateModelCase = (model, records, targetIndex, randomSeed) => {
     };
 };
 const selectModelsForFold = async (input) => {
-    const existing = input.store.listExperimentFolds(input.experiment.experimentId, 'inner')
+    const existing = input.store
+        .listExperimentFolds(input.experiment.experimentId, 'inner')
         .find((fold) => fold.foldIndex === input.selectionIndex && fold.status === 'complete');
     if (existing?.selectedParamsJson) {
         const selected = JSON.parse(existing.selectedParamsJson);
-        return input.spec.models.map((model) => ({ ...model, params: selected[model.modelId] || model.params, searchSpace: {} }));
+        return input.spec.models.map((model) => ({
+            ...model,
+            params: selected[model.modelId] || model.params,
+            searchSpace: {},
+        }));
     }
-    const validationEnd = input.spec.split.minTrain + Math.floor((input.targetStart - input.spec.split.minTrain) / input.spec.split.innerStep) * input.spec.split.innerStep;
+    const validationEnd = input.spec.split.minTrain +
+        Math.floor((input.targetStart - input.spec.split.minTrain) / input.spec.split.innerStep) *
+            input.spec.split.innerStep;
     const validationStart = Math.max(input.spec.split.minTrain, validationEnd - input.spec.split.innerValidation);
     const selectedModels = [];
     const candidateMetrics = {};
@@ -361,7 +371,8 @@ const selectModelsForFold = async (input) => {
     }
     for (const model of input.spec.models) {
         const candidates = modelCandidates(model);
-        const scored = candidates.map((candidate) => {
+        const scored = candidates
+            .map((candidate) => {
             const cases = [];
             for (let targetIndex = validationStart; targetIndex < validationEnd; targetIndex += 1) {
                 cases.push(evaluateModelCase(candidate, input.records, targetIndex, input.spec.randomSeed));
@@ -370,7 +381,8 @@ const selectModelsForFold = async (input) => {
                 model: candidate,
                 meanNormalizedRank: cases.length > 0 ? mean(cases.map((item) => item.normalizedRank)) : 0,
             };
-        }).sort((left, right) => left.meanNormalizedRank - right.meanNormalizedRank ||
+        })
+            .sort((left, right) => left.meanNormalizedRank - right.meanNormalizedRank ||
             parameterSimplicity(left.model) - parameterSimplicity(right.model) ||
             canonicalize(left.model.params).localeCompare(canonicalize(right.model.params)));
         selectedModels.push(scored[0].model);
@@ -388,11 +400,13 @@ const selectModelsForFold = async (input) => {
         experimentId: input.experiment.experimentId,
         foldLevel: 'inner',
         foldIndex: input.selectionIndex,
-        validationRange: validationStart < validationEnd ? {
-            fromPeriod: input.records[validationStart].period,
-            toPeriod: input.records[validationEnd - 1].period,
-            count: validationEnd - validationStart,
-        } : null,
+        validationRange: validationStart < validationEnd
+            ? {
+                fromPeriod: input.records[validationStart].period,
+                toPeriod: input.records[validationEnd - 1].period,
+                count: validationEnd - validationStart,
+            }
+            : null,
         selectedParams,
         candidateMetrics,
         featureSnapshotIds,
@@ -425,7 +439,6 @@ const evaluateFold = async (input) => {
     for (let targetIndex = input.targetStart; targetIndex < input.targetEnd; targetIndex += 1) {
         input.store.renewRuntimeLock('experiment-runner', input.ownerId);
         const training = input.records.slice(0, targetIndex);
-        const target = input.records[targetIndex];
         if (requiresFeatures) {
             const featureSnapshot = createPl3FeatureSnapshot(input.store, {
                 datasetSnapshotId: input.spec.datasetSnapshotId,
@@ -441,7 +454,10 @@ const evaluateFold = async (input) => {
     const modelMetrics = input.models.map((model) => calculateModelMetrics(model.modelId, cases.filter((item) => item.modelId === model.modelId)));
     const bootstrap = Object.fromEntries(input.models.map((model) => {
         const values = cases.filter((item) => item.modelId === model.modelId).map((item) => item.normalizedRank);
-        return [model.modelId, blockBootstrap(values, input.spec.bootstrap.resamples, input.spec.bootstrap.blockLength, stringSeed(input.spec.randomSeed, `${input.foldLevel}:${input.foldIndex}:${model.modelId}`))];
+        return [
+            model.modelId,
+            blockBootstrap(values, input.spec.bootstrap.resamples, input.spec.bootstrap.blockLength, stringSeed(input.spec.randomSeed, `${input.foldLevel}:${input.foldIndex}:${model.modelId}`)),
+        ];
     }));
     return {
         schemaVersion: 1,
@@ -467,7 +483,8 @@ const evaluateFold = async (input) => {
 };
 const foldRelativePath = (experimentId, level, index) => path.posix.join('reports', 'experiments', experimentId, 'folds', `${level}-${String(index).padStart(4, '0')}.json`);
 const runFoldSet = async (input) => {
-    const existing = new Map(input.store.listExperimentFolds(input.experiment.experimentId, input.foldLevel)
+    const existing = new Map(input.store
+        .listExperimentFolds(input.experiment.experimentId, input.foldLevel)
         .filter((fold) => fold.status === 'complete')
         .map((fold) => [fold.foldIndex, fold]));
     let foldIndex = 0;
@@ -478,17 +495,18 @@ const runFoldSet = async (input) => {
             continue;
         }
         const startedAt = new Date().toISOString();
-        const models = input.fixedModels || (input.selectNested === false
-            ? input.spec.models.map((model) => ({ ...model, searchSpace: {} }))
-            : await selectModelsForFold({
-                store: input.store,
-                experiment: input.experiment,
-                spec: input.spec,
-                records: input.records,
-                targetStart,
-                selectionIndex: foldIndex,
-                ownerId: input.ownerId,
-            }));
+        const models = input.fixedModels ||
+            (input.selectNested === false
+                ? input.spec.models.map((model) => ({ ...model, searchSpace: {} }))
+                : await selectModelsForFold({
+                    store: input.store,
+                    experiment: input.experiment,
+                    spec: input.spec,
+                    records: input.records,
+                    targetStart,
+                    selectionIndex: foldIndex,
+                    ownerId: input.ownerId,
+                }));
         const base = {
             experimentId: input.experiment.experimentId,
             foldLevel: input.foldLevel,
@@ -551,9 +569,9 @@ const loadExperimentAndSpec = (store, experimentId) => {
 const reportContent = async (store, experimentId) => {
     const { experiment, spec } = loadExperimentAndSpec(store, experimentId);
     const includeFrozen = experiment.status === 'frozen_evaluated';
-    const folds = store.listExperimentFolds(experimentId)
-        .filter((fold) => fold.status === 'complete' &&
-        (fold.foldLevel === 'outer' || (includeFrozen && fold.foldLevel === 'frozen')));
+    const folds = store
+        .listExperimentFolds(experimentId)
+        .filter((fold) => fold.status === 'complete' && (fold.foldLevel === 'outer' || (includeFrozen && fold.foldLevel === 'frozen')));
     const foldResults = [];
     for (const fold of folds) {
         if (!fold.resultPath)
@@ -563,7 +581,10 @@ const reportContent = async (store, experimentId) => {
     const levels = ['outer', ...(includeFrozen ? ['frozen'] : [])];
     const summary = Object.fromEntries(levels.map((level) => {
         const levelCases = foldResults.filter((fold) => fold.foldLevel === level).flatMap((fold) => fold.cases);
-        return [level, spec.models.map((model) => calculateModelMetrics(model.modelId, levelCases.filter((item) => item.modelId === model.modelId)))];
+        return [
+            level,
+            spec.models.map((model) => calculateModelMetrics(model.modelId, levelCases.filter((item) => item.modelId === model.modelId))),
+        ];
     }));
     return {
         schemaVersion: 1,
@@ -603,7 +624,12 @@ export const generatePl3ExperimentReport = async (store, experimentId) => {
     await writeTextAtomically(path.join(dataDir, relativeMarkdownPath), markdown);
     const reportHash = sha256(canonicalize(report));
     store.setExperimentReport(experimentId, relativeJsonPath, reportHash);
-    return { report, reportHash, reportPath: path.join(dataDir, relativeJsonPath), markdownPath: path.join(dataDir, relativeMarkdownPath) };
+    return {
+        report,
+        reportHash,
+        reportPath: path.join(dataDir, relativeJsonPath),
+        markdownPath: path.join(dataDir, relativeMarkdownPath),
+    };
 };
 export const runPl3Experiment = async (store, experimentId) => {
     const loaded = loadExperimentAndSpec(store, experimentId);
@@ -663,7 +689,8 @@ export const evaluatePl3ExperimentFrozen = async (store, experimentId) => {
     if (loaded.experiment.status !== 'development_complete') {
         throw new Error(`实验 ${experimentId} 当前状态 ${loaded.experiment.status}，不能评估冻结区。`);
     }
-    const previousAttempts = store.listExperimentAudit(experimentId)
+    const previousAttempts = store
+        .listExperimentAudit(experimentId)
         .filter((item) => item.action === 'frozen-evaluate' && item.status === 'started');
     if (previousAttempts.length > 0)
         throw new Error('该实验已经尝试过冻结评估，必须创建新 experimentId。');
@@ -675,7 +702,8 @@ export const evaluatePl3ExperimentFrozen = async (store, experimentId) => {
     try {
         store.addExperimentAudit(experimentId, 'frozen-evaluate', 'started');
         store.updateExperimentStatus(experimentId, 'running', { expected: ['development_complete'] });
-        const outerFolds = store.listExperimentFolds(experimentId, 'outer')
+        const outerFolds = store
+            .listExperimentFolds(experimentId, 'outer')
             .filter((fold) => fold.status === 'complete' && fold.selectedParamsJson);
         const lastOuter = outerFolds.at(-1);
         const fixedModels = lastOuter?.selectedParamsJson

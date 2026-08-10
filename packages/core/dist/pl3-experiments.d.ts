@@ -1,6 +1,6 @@
 import { PL3_FEATURE_VERSION } from './pl3-features.js';
 import { PL3_MODEL_VERSION } from './pl3-prediction.js';
-import type { Pl3ExperimentFoldStorageRecord, Pl3ExperimentStatus, Pl3ExperimentStorageRecord, Pl3Store } from './pl3-store.js';
+import type { Pl3ExperimentFoldStorageRecord, Pl3ExperimentStorageRecord, Pl3Store } from './pl3-store.js';
 export declare const PL3_EXPERIMENT_SPEC_VERSION = 1;
 export type Pl3BaselineModelId = 'uniform-theory' | 'random-monte-carlo' | typeof PL3_MODEL_VERSION;
 export type Pl3ExperimentMode = 'development' | 'confirmatory';
@@ -140,7 +140,7 @@ export declare const generatePl3ExperimentReport: (store: Pl3Store, experimentId
         schemaVersion: number;
         experimentId: string;
         name: string;
-        status: Pl3ExperimentStatus;
+        status: import("./pl3-store.js").Pl3ExperimentStatus;
         mode: "development" | "confirmatory";
         datasetSnapshotId: string;
         specHash: string;
@@ -161,7 +161,7 @@ export declare const runPl3Experiment: (store: Pl3Store, experimentId: string) =
         schemaVersion: number;
         experimentId: string;
         name: string;
-        status: Pl3ExperimentStatus;
+        status: import("./pl3-store.js").Pl3ExperimentStatus;
         mode: "development" | "confirmatory";
         datasetSnapshotId: string;
         specHash: string;
@@ -182,7 +182,7 @@ export declare const evaluatePl3ExperimentFrozen: (store: Pl3Store, experimentId
         schemaVersion: number;
         experimentId: string;
         name: string;
-        status: Pl3ExperimentStatus;
+        status: import("./pl3-store.js").Pl3ExperimentStatus;
         mode: "development" | "confirmatory";
         datasetSnapshotId: string;
         specHash: string;
@@ -202,5 +202,11 @@ export declare const inspectPl3Experiment: (store: Pl3Store, experimentId: strin
     experiment: Pl3ExperimentStorageRecord;
     spec: Pl3ExperimentSpec;
     folds: Pl3ExperimentFoldStorageRecord[];
-    audit: unknown[];
+    audit: {
+        audit_id: number;
+        action: string;
+        status: string;
+        details_json: string;
+        created_at: string;
+    }[];
 };

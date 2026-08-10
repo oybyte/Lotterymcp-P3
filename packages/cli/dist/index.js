@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { McpApiError, applyLegacyPl3Migration, applyPl3SchemaMigration, backupPl3Database, createLotteryMcpClient, createPl3Experiment, createPl3PredictionService, evaluatePl3ExperimentFrozen, formatMcpApiError, generatePl3ExperimentReport, hasPl3Database, normalizePl3Records, openPl3Store, previewLegacyPl3Migration, previewPl3SchemaMigration, inspectPl3Experiment, PL3_DATABASE_LATEST_SCHEMA_VERSION, resolvePl3DatabasePath, restorePl3Database, runPl3Experiment, writeJsonAtomically, } from 'lotterymcp-core';
+import { McpApiError, applyLegacyPl3Migration, applyPl3SchemaMigration, backupPl3Database, createLotteryMcpClient, createPl3Experiment, createPl3PredictionService, evaluatePl3ExperimentFrozen, formatMcpApiError, generatePl3ExperimentReport, hasPl3Database, normalizePl3Records, openPl3Store, previewLegacyPl3Migration, previewPl3SchemaMigration, inspectPl3Experiment, PL3_DATABASE_LATEST_SCHEMA_VERSION, resolvePl3DatabasePath, restorePl3Database, runPl3Experiment, verifyPl3PredictionSla, writeJsonAtomically, } from 'lotterymcp-core';
 import { MCP_SERVER_TOOLS, MCP_SERVER_TRANSPORT, startLotteryMcpStdioServer } from 'lotterymcp-server';
 import { DEFAULT_API_BASE_URL, DEFAULT_PERIODS, getConfigPath, maskToken, renderMcpConfigSnippet, resolveConfig, saveLocalConfig, validateConfig, } from './config.js';
 import { renderNbcpBanner, shouldShowBanner } from './banner.js';
@@ -79,8 +79,10 @@ const renderConfigSummary = (config) => `当前配置:
 const renderAnalyzeUsage = () => {
     return `用法:
   lotterymcp predict --periods 200 --tickets 10 --play mixed
+  lotterymcp predict --periods 200 --tickets 10 --play mixed --training-status confirmed
 
 玩法: direct, group3, group6, mixed
+训练窗口 (--training-status): mixed 混合含单来源（默认）, confirmed 仅双官方源确认
 `;
 };
 const renderInitUsage = () => `用法:
@@ -105,7 +107,7 @@ const renderExperimentUsage = () => `用法:
   实验只读取 immutable dataset snapshot；冻结区只能显式确认后评估一次。
 `;
 const renderOpsUsage = () => `用法:
-  lotterymcp ops run-once [--periods 200] [--tickets 10] [--play mixed] [--no-sync] [--migrate] [--no-notify] [--json]
+  lotterymcp ops run-once [--periods 200] [--tickets 10] [--play mixed] [--training-status confirmed|mixed] [--no-sync] [--migrate] [--no-notify] [--json]
   lotterymcp ops serve-reports [--host 127.0.0.1] [--port 4317] [--access-mode tunnel|public]
   lotterymcp ops reports [--json]
   lotterymcp ops auth init --password PASSWORD [--json]
@@ -211,18 +213,20 @@ const promptForConfig = async (argv = []) => {
     const hasNamedOptions = argv.length > 0;
     if (!process.stdin.isTTY) {
         const pipedInput = hasNamedOptions ? [] : readFileSync(0, 'utf8').split(/\r?\n/);
-        const nextConfig = buildNextConfig(currentConfig, hasNamedOptions ? {
-            dataMode: options.mode,
-            apiBaseUrl: options.apiBaseUrl,
-            token: options.token,
-            defaultPeriods: options.periods,
-            dataDir: options.dataDir,
-        } : {
-            dataMode: 'remote',
-            apiBaseUrl: pipedInput[0],
-            token: pipedInput[1],
-            defaultPeriods: pipedInput[2],
-        });
+        const nextConfig = buildNextConfig(currentConfig, hasNamedOptions
+            ? {
+                dataMode: options.mode,
+                apiBaseUrl: options.apiBaseUrl,
+                token: options.token,
+                defaultPeriods: options.periods,
+                dataDir: options.dataDir,
+            }
+            : {
+                dataMode: 'remote',
+                apiBaseUrl: pipedInput[0],
+                token: pipedInput[1],
+                defaultPeriods: pipedInput[2],
+            });
         return persistConfig(nextConfig);
     }
     const rl = createInterface({
@@ -231,7 +235,9 @@ const promptForConfig = async (argv = []) => {
     });
     try {
         const defaultMode = currentConfig.dataMode === 'official' ? 'official' : 'remote';
-        const modeInput = options.mode || (await rl.question(`数据模式 remote/official [${defaultMode}]: `)).trim().toLowerCase() || defaultMode;
+        const modeInput = options.mode ||
+            (await rl.question(`数据模式 remote/official [${defaultMode}]: `)).trim().toLowerCase() ||
+            defaultMode;
         if (modeInput !== 'remote' && modeInput !== 'official') {
             console.error(`不支持的数据模式: ${modeInput}`);
             return 1;
@@ -400,7 +406,9 @@ const runDoctor = async (argv = []) => {
                         counts[experiment.status] = (counts[experiment.status] || 0) + 1;
                         return counts;
                     }, {});
-                    const activeLocks = store.listRuntimeLocks().filter((lock) => Date.parse(String(lock.expires_at)) > Date.now());
+                    const activeLocks = store
+                        .listRuntimeLocks()
+                        .filter((lock) => Date.parse(String(lock.expires_at)) > Date.now());
                     const runs = schemaVersion >= 3 ? store.listOnlinePredictionRuns({ limit: 20 }) : [];
                     console.log(`实验: ${experiments.length}，状态 ${JSON.stringify(statusCounts)}，活动锁 ${activeLocks.length}`);
                     console.log(`线上预测运行: ${runs.length}`);
@@ -425,11 +433,7 @@ const runDoctor = async (argv = []) => {
         return 0;
     }
     catch (error) {
-        const message = error instanceof McpApiError
-            ? formatMcpApiError(error)
-            : error instanceof Error
-                ? error.message
-                : String(error);
+        const message = error instanceof McpApiError ? formatMcpApiError(error) : error instanceof Error ? error.message : String(error);
         console.error(`检查失败: ${message}`);
         return 1;
     }
@@ -453,11 +457,7 @@ const runServe = async () => {
         return 0;
     }
     catch (error) {
-        const message = error instanceof McpApiError
-            ? formatMcpApiError(error)
-            : error instanceof Error
-                ? error.message
-                : String(error);
+        const message = error instanceof McpApiError ? formatMcpApiError(error) : error instanceof Error ? error.message : String(error);
         console.error(`MCP 服务启动失败: ${message}`);
         return 1;
     }
@@ -480,17 +480,37 @@ const getPredictionPayouts = () => {
     };
     return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
 };
+const featureLabel = {
+    positionFrequency: '位置频率',
+    digitFrequency: '位数频率',
+    sumFrequency: '和值频率',
+    oddEvenFrequency: '奇偶频率',
+    spanFrequency: '跨度频率',
+    numberTypeFrequency: '号码结构',
+};
+const renderTicketLine = (ticket) => {
+    const leading = ticket.scoreComposition
+        ? `  主导:${featureLabel[ticket.scoreComposition.leadingFeature] || ticket.scoreComposition.leadingFeature}`
+        : '';
+    return `  ${String(ticket.rank).padStart(2, ' ')}. ${ticket.playType.padEnd(6, ' ')} ${ticket.display}  score=${ticket.score}${leading}`;
+};
 const renderPrediction = (prediction) => {
+    const dataStatus = prediction.training.dataStatus;
+    const confirmedLine = dataStatus.dualSourceCoverage === null
+        ? '  数据状态: 训练集缺少来源状态标注'
+        : `  数据状态: 双源确认 ${dataStatus.confirmedRecords} / 单源 ${dataStatus.singleSourceRecords}${dataStatus.conflictRecords > 0 ? ` / 冲突 ${dataStatus.conflictRecords}` : ''}（双源覆盖率 ${(dataStatus.dualSourceCoverage * 100).toFixed(1)}%）`;
     const lines = [
         '排列3预测结果',
         `  截止期号: ${prediction.afterPeriod}`,
         `  训练记录: ${prediction.training.recordCount}`,
+        confirmedLine,
         `  模型版本: ${prediction.model.version}`,
         `  玩法/注数: ${prediction.query.playType} / ${prediction.query.tickets}`,
+        `  训练窗口: ${prediction.query.trainingStatus === 'confirmed' ? '仅双源确认记录' : '混合（含单来源）'}`,
         `  预测 ID: ${prediction.predictionId}`,
         '',
         '候选票:',
-        ...prediction.tickets.map((ticket) => `  ${String(ticket.rank).padStart(2, ' ')}. ${ticket.playType.padEnd(6, ' ')} ${ticket.display}  score=${ticket.score}`),
+        ...prediction.tickets.map(renderTicketLine),
         '',
         prediction.backtest.status === 'complete'
             ? `回测: ${prediction.backtest.testCount} 期 | 成本 ${prediction.backtest.totalCost} | 返回 ${prediction.backtest.totalReturn} | ROI ${prediction.backtest.roi}`
@@ -521,7 +541,20 @@ const parsePredictionArgs = (argv, allowProgramAlias = false) => {
             continue;
         }
         if (arg === '--play') {
-            parsed.playType = String(argv[index + 1] || '').trim().toLowerCase();
+            parsed.playType = String(argv[index + 1] || '')
+                .trim()
+                .toLowerCase();
+            index += 1;
+            continue;
+        }
+        if (arg === '--training-status') {
+            const value = String(argv[index + 1] || '')
+                .trim()
+                .toLowerCase();
+            if (value !== 'confirmed' && value !== 'mixed') {
+                throw new Error(`--training-status 只支持 confirmed 或 mixed，收到: ${value || '(空)'}`);
+            }
+            parsed.trainingStatus = value;
             index += 1;
             continue;
         }
@@ -568,6 +601,9 @@ const runPredictionCommand = async (argv, allowProgramAlias = false) => {
             periods: parsed.periods,
             tickets: parsed.tickets,
             playType: parsed.playType,
+            ...(parsed.trainingStatus === 'confirmed' || parsed.trainingStatus === 'mixed'
+                ? { trainingStatus: parsed.trainingStatus }
+                : {}),
         });
         console.log(renderPrediction(envelope.data));
         if (parsed.outputPath) {
@@ -594,9 +630,12 @@ const runPredictionMenu = async () => {
         const tickets = (await rl.question(`候选注数 [10]: `)).trim();
         const play = (await rl.question(`玩法 direct/group3/group6/mixed [mixed]: `)).trim();
         return runPredictionCommand([
-            '--periods', periods || '200',
-            '--tickets', tickets || '10',
-            '--play', play || 'mixed',
+            '--periods',
+            periods || '200',
+            '--tickets',
+            tickets || '10',
+            '--play',
+            play || 'mixed',
         ]);
     }
     finally {
@@ -623,7 +662,9 @@ const parseSyncArgs = (argv) => {
             continue;
         }
         if (arg === '--lottery') {
-            const lotteryType = String(argv[index + 1] || '').trim().toLowerCase();
+            const lotteryType = String(argv[index + 1] || '')
+                .trim()
+                .toLowerCase();
             if (lotteryType !== 'pl3') {
                 throw new Error(`未支持的官方彩种: ${lotteryType || '(空)'}`);
             }
@@ -715,8 +756,9 @@ const runSyncCommand = async (argv) => {
 };
 const renderDataUsage = () => `用法:
   lotterymcp data status [--json]
-  lotterymcp data sync [--limit 500]
-  lotterymcp data sync --full [--provider auto|lottery-gov-cn|zhcw] [--reconcile] [--resume|--restart]
+  lotterymcp data sla [--json]
+lotterymcp data sync [--limit 500]
+  lotterymcp data sync --full [--provider auto|lottery-gov-cn|zhcw] [--reconcile] [--reconcile-history] [--resume|--restart]
   lotterymcp data import --file FILE [--format json|csv]
   lotterymcp data export --output FILE [--format json|csv]
   lotterymcp data migrate --dry-run
@@ -737,6 +779,8 @@ const renderDataUsage = () => `用法:
 说明:
   migrate 使用旁路数据库验证后原子切换，不删除原 pl3.json 和预测账本。
   doctor 和 serve 不会隐式执行数据迁移。
+  --reconcile 会额外同步中彩网作为第二来源核对；--reconcile-history 会重新推导历史
+  single_source/conflict 期号的状态，把后来补到的双源一致期号升级为 confirmed。
 `;
 const getArgumentValue = (argv, name) => {
     const index = argv.indexOf(name);
@@ -768,8 +812,9 @@ const runDataStatus = async (dataDir, asJson) => {
     const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true });
     try {
         const status = store.getStatus();
+        const byYear = store.getConfidenceByYear();
         if (asJson)
-            console.log(JSON.stringify({ storage: 'sqlite', ...status }, null, 2));
+            console.log(JSON.stringify({ storage: 'sqlite', ...status, confidenceByYear: byYear }, null, 2));
         else {
             console.log('排列3数据存储: sqlite');
             console.log(`  数据库: ${status.databasePath}`);
@@ -781,7 +826,50 @@ const runDataStatus = async (dataDir, asJson) => {
             console.log(`  来源核对覆盖率: ${status.reconciliationCoverage === null ? 'unknown' : `${(status.reconciliationCoverage * 100).toFixed(2)}%`}`);
             console.log(`  双官方来源覆盖率: ${status.dualSourceCoverage === null ? 'unknown' : `${(status.dualSourceCoverage * 100).toFixed(2)}%`}`);
             console.log(`  已保全旧预测: ${status.legacyPredictionCount}`);
+            console.log('  分年度可信度:');
+            for (const row of byYear) {
+                console.log(`    ${row.year}年: ${row.totalPeriods} 期 | 确认 ${row.confirmedRecords} / 单来源 ${row.singleSourceRecords} / 冲突 ${row.conflictRecords}` +
+                    ` | 双源覆盖率 ${row.dualSourceCoverage === null ? 'unknown' : `${(row.dualSourceCoverage * 100).toFixed(2)}%`}`);
+            }
         }
+        return 0;
+    }
+    finally {
+        store.close();
+    }
+};
+const runDataSla = async (dataDir, asJson) => {
+    if (!hasPl3Database(dataDir)) {
+        console.log('SLA 时间证据需要 sqlite 数据库（请先 data migrate --apply）。');
+        return 0;
+    }
+    const ledgerPath = path.join(dataDir, 'pl3-predictions.json');
+    const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true });
+    try {
+        const summary = await verifyPl3PredictionSla(ledgerPath, (prediction) => store.getPredictionSlaEvidence(prediction));
+        if (asJson) {
+            console.log(JSON.stringify(summary, null, 2));
+            return 0;
+        }
+        console.log('预测 SLA 时间证据（生成时刻 vs 目标期首次本地 observation）:');
+        console.log(`  预测总数: ${summary.total}`);
+        console.log(`  有目标期证据: ${summary.withEvidence}`);
+        console.log(`  早于首次 observation: ${summary.verifiedBeforeObservation}`);
+        console.log(`  晚于首次 observation: ${summary.violated}`);
+        console.log(`  尚无目标期证据(未开出): ${summary.pendingEvidence}`);
+        for (const item of summary.items.slice(0, 20)) {
+            const status = item.predictedBeforeFirstObservation === true
+                ? 'ok'
+                : item.predictedBeforeFirstObservation === false
+                    ? 'LATE'
+                    : 'pending';
+            console.log(`  [${status.padEnd(7)}] ${item.predictionId}  target=${item.targetPeriod || '-'}` +
+                `  predicted=${item.generatedAt.slice(0, 19).replace('T', ' ')}` +
+                (item.firstObservedAt ? `  observed=${item.firstObservedAt.slice(0, 19).replace('T', ' ')}` : ''));
+        }
+        if (summary.total > 20)
+            console.log(`  ... 其余 ${summary.total - 20} 条略过`);
+        console.log('  说明: 该证据仅证明预测早于本地首次观察到目标期结果，不构成第三方开奖前时间戳证明。');
         return 0;
     }
     finally {
@@ -800,6 +888,8 @@ const runDataCommand = async (argv) => {
     try {
         if (action === 'status')
             return runDataStatus(dataDir, asJson);
+        if (action === 'sla')
+            return runDataSla(dataDir, asJson);
         if (action === 'sync') {
             if (!hasPl3Database(dataDir) && existsSync(path.join(dataDir, 'pl3.json'))) {
                 throw new Error('检测到旧 pl3.json，请先执行 data migrate --dry-run 和 data migrate --apply。');
@@ -841,6 +931,19 @@ const runDataCommand = async (argv) => {
                 }));
             }
             const finalResult = results.at(-1);
+            let reconcileHistoryResult;
+            if (argv.includes('--reconcile-history')) {
+                if (!hasPl3Database(dataDir)) {
+                    throw new Error('data sync --reconcile-history 需要已存在的 SQLite 数据档案。');
+                }
+                const store = openPl3Store({ dataDir });
+                try {
+                    reconcileHistoryResult = store.reconcileHistory();
+                }
+                finally {
+                    store.close();
+                }
+            }
             if (asJson)
                 console.log(JSON.stringify({
                     syncs: results.map((item) => ({
@@ -862,6 +965,7 @@ const runDataCommand = async (argv) => {
                         singleSourceRecords: finalResult.singleSourceRecords,
                         conflictRecords: finalResult.conflictRecords,
                     },
+                    ...(reconcileHistoryResult ? { reconcileHistory: reconcileHistoryResult } : {}),
                 }, null, 2));
             else {
                 console.log(`同步完成: ${finalResult.databasePath}`);
@@ -879,6 +983,12 @@ const runDataCommand = async (argv) => {
                 const settledCount = results.reduce((total, item) => total + item.settledCount, 0);
                 if (settledCount > 0)
                     console.log(`  已结算预测: ${settledCount}`);
+                if (reconcileHistoryResult) {
+                    console.log('  历史截止核对: ' +
+                        `升级为确认 ${reconcileHistoryResult.upgradedToConfirmed}，` +
+                        `仍单来源 ${reconcileHistoryResult.remainingSingleSource}，` +
+                        `仍冲突 ${reconcileHistoryResult.remainingConflicts}`);
+                }
             }
             return 0;
         }
@@ -894,15 +1004,17 @@ const runDataCommand = async (argv) => {
                 filePath,
                 format: getArgumentValue(argv, '--format'),
             });
-            printDataValue(asJson ? result : [
-                '排列3文件导入完成。',
-                `  数据库: ${result.databasePath}`,
-                `  输入记录: ${result.inputCount}`,
-                `  新 observation: ${result.insertedObservations}`,
-                `  重复 observation: ${result.repeatedObservations}`,
-                `  影响期数: ${result.affectedPeriods}`,
-                `  原始文件归档: ${result.rawPath}`,
-            ].join('\n'), asJson);
+            printDataValue(asJson
+                ? result
+                : [
+                    '排列3文件导入完成。',
+                    `  数据库: ${result.databasePath}`,
+                    `  输入记录: ${result.inputCount}`,
+                    `  新 observation: ${result.insertedObservations}`,
+                    `  重复 observation: ${result.repeatedObservations}`,
+                    `  影响期数: ${result.affectedPeriods}`,
+                    `  原始文件归档: ${result.rawPath}`,
+                ].join('\n'), asJson);
             return 0;
         }
         if (action === 'export') {
@@ -927,46 +1039,56 @@ const runDataCommand = async (argv) => {
             if (hasPl3Database(dataDir)) {
                 if (dryRun) {
                     const preview = previewPl3SchemaMigration(dataDir);
-                    printDataValue(asJson ? preview : [
-                        '排列3数据库 schema 迁移预检完成。',
-                        `  数据库: ${preview.databasePath}`,
-                        `  当前版本: ${preview.currentVersion}`,
-                        `  目标版本: ${preview.targetVersion}`,
-                        `  待执行: ${preview.migrations.map((item) => `M00${item.version} ${item.name}`).join(', ') || '无'}`,
-                    ].join('\n'), asJson);
+                    printDataValue(asJson
+                        ? preview
+                        : [
+                            '排列3数据库 schema 迁移预检完成。',
+                            `  数据库: ${preview.databasePath}`,
+                            `  当前版本: ${preview.currentVersion}`,
+                            `  目标版本: ${preview.targetVersion}`,
+                            `  待执行: ${preview.migrations.map((item) => `M00${item.version} ${item.name}`).join(', ') || '无'}`,
+                        ].join('\n'), asJson);
                     return 0;
                 }
                 const result = await applyPl3SchemaMigration(dataDir);
-                printDataValue(asJson ? result : result.applied ? [
-                    '排列3数据库 schema 迁移完成。',
-                    `  当前版本: ${result.currentVersion}`,
-                    `  迁移前备份: ${result.backupPath}`,
-                    `  被替换数据库: ${result.replacedPath}`,
-                ].join('\n') : `排列3数据库 schema 已是最新版本 ${result.currentVersion}。`, asJson);
+                printDataValue(asJson
+                    ? result
+                    : result.applied
+                        ? [
+                            '排列3数据库 schema 迁移完成。',
+                            `  当前版本: ${result.currentVersion}`,
+                            `  迁移前备份: ${result.backupPath}`,
+                            `  被替换数据库: ${result.replacedPath}`,
+                        ].join('\n')
+                        : `排列3数据库 schema 已是最新版本 ${result.currentVersion}。`, asJson);
                 return 0;
             }
             if (dryRun) {
                 const preview = await previewLegacyPl3Migration(dataDir);
-                printDataValue(asJson ? preview : [
-                    '排列3迁移预检通过。',
-                    `  数据目录: ${preview.dataDir}`,
-                    `  历史记录: ${preview.recordCount}`,
-                    `  期号范围: ${preview.oldestPeriod || '未知'}..${preview.latestPeriod || '未知'}`,
-                    `  历史哈希: ${preview.recordHash || '无'}`,
-                    `  预测记录: ${preview.predictionCount}`,
-                    `  目标数据库: ${preview.databasePath}`,
-                ].join('\n'), asJson);
+                printDataValue(asJson
+                    ? preview
+                    : [
+                        '排列3迁移预检通过。',
+                        `  数据目录: ${preview.dataDir}`,
+                        `  历史记录: ${preview.recordCount}`,
+                        `  期号范围: ${preview.oldestPeriod || '未知'}..${preview.latestPeriod || '未知'}`,
+                        `  历史哈希: ${preview.recordHash || '无'}`,
+                        `  预测记录: ${preview.predictionCount}`,
+                        `  目标数据库: ${preview.databasePath}`,
+                    ].join('\n'), asJson);
                 return preview.databaseExists || !preview.historyExists ? 1 : 0;
             }
             const result = await applyLegacyPl3Migration(dataDir);
-            printDataValue(asJson ? result : [
-                '排列3 SQLite 迁移完成。',
-                `  数据库: ${result.databasePath}`,
-                `  导入开奖记录: ${result.importedObservations}`,
-                `  保全预测记录: ${result.importedPredictions}`,
-                `  备份: ${result.backupPaths.join(', ') || '无'}`,
-                '  原 JSON 已保留，未启用双写。',
-            ].join('\n'), asJson);
+            printDataValue(asJson
+                ? result
+                : [
+                    '排列3 SQLite 迁移完成。',
+                    `  数据库: ${result.databasePath}`,
+                    `  导入开奖记录: ${result.importedObservations}`,
+                    `  保全预测记录: ${result.importedPredictions}`,
+                    `  备份: ${result.backupPaths.join(', ') || '无'}`,
+                    '  原 JSON 已保留，未启用双写。',
+                ].join('\n'), asJson);
             return 0;
         }
         if (action === 'snapshot') {
@@ -985,8 +1107,11 @@ const runDataCommand = async (argv) => {
                     if (lastValue !== undefined && (fromPeriod || afterPeriod)) {
                         throw new Error('snapshot 的 --last 与显式期号范围不能同时使用。');
                     }
-                    const last = lastValue === undefined && !fromPeriod && !afterPeriod ? 2000 :
-                        lastValue === undefined ? undefined : Number(lastValue);
+                    const last = lastValue === undefined && !fromPeriod && !afterPeriod
+                        ? 2000
+                        : lastValue === undefined
+                            ? undefined
+                            : Number(lastValue);
                     if (last !== undefined && (!Number.isInteger(last) || last < 1)) {
                         throw new Error('snapshot 的 --last 必须是正整数。');
                     }
@@ -997,14 +1122,16 @@ const runDataCommand = async (argv) => {
                         allowSingleSource: argv.includes('--allow-single-source'),
                         codeCommit: process.env.LOTTERYMCP_CODE_COMMIT || process.env.GITHUB_SHA,
                     });
-                    printDataValue(asJson ? snapshot : [
-                        '排列3数据 snapshot 创建完成。',
-                        `  Snapshot ID: ${snapshot.snapshotId}`,
-                        `  期号范围: ${snapshot.fromPeriod}..${snapshot.afterPeriod}`,
-                        `  记录: ${snapshot.recordCount}`,
-                        `  confirmed/single-source: ${snapshot.confirmedCount}/${snapshot.singleSourceCount}`,
-                        `  数据哈希: ${snapshot.dataHash}`,
-                    ].join('\n'), asJson);
+                    printDataValue(asJson
+                        ? snapshot
+                        : [
+                            '排列3数据 snapshot 创建完成。',
+                            `  Snapshot ID: ${snapshot.snapshotId}`,
+                            `  期号范围: ${snapshot.fromPeriod}..${snapshot.afterPeriod}`,
+                            `  记录: ${snapshot.recordCount}`,
+                            `  confirmed/single-source: ${snapshot.confirmedCount}/${snapshot.singleSourceCount}`,
+                            `  数据哈希: ${snapshot.dataHash}`,
+                        ].join('\n'), asJson);
                     return 0;
                 }
                 if (snapshotAction === 'list') {
@@ -1027,16 +1154,18 @@ const runDataCommand = async (argv) => {
                     const snapshot = store.getDatasetSnapshot(snapshotId);
                     if (!snapshot)
                         throw new Error(`排列3数据 snapshot 不存在: ${snapshotId}`);
-                    printDataValue(asJson ? snapshot : [
-                        `Snapshot: ${snapshot.snapshotId}`,
-                        `  期号范围: ${snapshot.fromPeriod}..${snapshot.afterPeriod}`,
-                        `  记录: ${snapshot.recordCount}`,
-                        `  质量: ${snapshot.quality}`,
-                        `  confirmed/single-source: ${snapshot.confirmedCount}/${snapshot.singleSourceCount}`,
-                        `  数据哈希: ${snapshot.dataHash}`,
-                        `  创建时间: ${snapshot.createdAt}`,
-                        `  代码 commit: ${snapshot.codeCommit || '未记录'}`,
-                    ].join('\n'), asJson);
+                    printDataValue(asJson
+                        ? snapshot
+                        : [
+                            `Snapshot: ${snapshot.snapshotId}`,
+                            `  期号范围: ${snapshot.fromPeriod}..${snapshot.afterPeriod}`,
+                            `  记录: ${snapshot.recordCount}`,
+                            `  质量: ${snapshot.quality}`,
+                            `  confirmed/single-source: ${snapshot.confirmedCount}/${snapshot.singleSourceCount}`,
+                            `  数据哈希: ${snapshot.dataHash}`,
+                            `  创建时间: ${snapshot.createdAt}`,
+                            `  代码 commit: ${snapshot.codeCommit || '未记录'}`,
+                        ].join('\n'), asJson);
                     return 0;
                 }
                 if (snapshotAction === 'verify') {
@@ -1044,11 +1173,13 @@ const runDataCommand = async (argv) => {
                     if (!snapshotId)
                         throw new Error('snapshot verify 必须提供 SNAPSHOT_ID。');
                     const verification = store.verifyDatasetSnapshot(snapshotId);
-                    printDataValue(asJson ? verification : [
-                        `Snapshot ${snapshotId}: ${verification.valid ? '有效' : '无效'}`,
-                        `  记录: ${verification.actualRecordCount}/${verification.expectedRecordCount}`,
-                        `  哈希: ${verification.actualDataHash}`,
-                    ].join('\n'), asJson);
+                    printDataValue(asJson
+                        ? verification
+                        : [
+                            `Snapshot ${snapshotId}: ${verification.valid ? '有效' : '无效'}`,
+                            `  记录: ${verification.actualRecordCount}/${verification.expectedRecordCount}`,
+                            `  哈希: ${verification.actualDataHash}`,
+                        ].join('\n'), asJson);
                     return verification.valid ? 0 : 1;
                 }
                 throw new Error(`未知 snapshot 子命令: ${snapshotAction}`);
@@ -1120,12 +1251,14 @@ const runDataCommand = async (argv) => {
                 if (!outputDir)
                     throw new Error('data bundle create 必须提供 --output DIR。');
                 const result = await createPl3DataBundle({ dataDir, outputDir });
-                printDataValue(asJson ? result : [
-                    '排列3数据迁移 bundle 已创建。',
-                    `  目录: ${result.outputDir}`,
-                    `  数据库哈希: ${result.manifest.database.sha256}`,
-                    `  来源备份: ${result.sourceBackupPath}`,
-                ].join('\n'), asJson);
+                printDataValue(asJson
+                    ? result
+                    : [
+                        '排列3数据迁移 bundle 已创建。',
+                        `  目录: ${result.outputDir}`,
+                        `  数据库哈希: ${result.manifest.database.sha256}`,
+                        `  来源备份: ${result.sourceBackupPath}`,
+                    ].join('\n'), asJson);
                 return 0;
             }
             if (bundleAction === 'verify') {
@@ -1133,11 +1266,13 @@ const runDataCommand = async (argv) => {
                 if (!bundleDir)
                     throw new Error('data bundle verify 必须提供 --bundle DIR。');
                 const result = await verifyPl3DataBundle(bundleDir);
-                printDataValue(asJson ? result : [
-                    `Bundle: ${result.bundleDir}`,
-                    `  校验: ${result.valid ? '通过' : '失败'}`,
-                    ...result.checks.map((item) => `  ${item.file}: ${item.valid ? 'ok' : 'failed'} ${item.actualSha256}`),
-                ].join('\n'), asJson);
+                printDataValue(asJson
+                    ? result
+                    : [
+                        `Bundle: ${result.bundleDir}`,
+                        `  校验: ${result.valid ? '通过' : '失败'}`,
+                        ...result.checks.map((item) => `  ${item.file}: ${item.valid ? 'ok' : 'failed'} ${item.actualSha256}`),
+                    ].join('\n'), asJson);
                 return result.valid ? 0 : 1;
             }
             if (bundleAction === 'restore') {
@@ -1145,12 +1280,14 @@ const runDataCommand = async (argv) => {
                 if (!bundleDir)
                     throw new Error('data bundle restore 必须提供 --bundle DIR。');
                 const result = await restorePl3DataBundle({ dataDir, bundleDir });
-                printDataValue(asJson ? result : [
-                    '排列3数据迁移 bundle 已恢复。',
-                    `  数据库: ${result.databasePath}`,
-                    `  安全备份: ${result.safetyBackupPath || '无'}`,
-                    `  预测账本: ${result.ledgerRestoredPath || '未包含'}`,
-                ].join('\n'), asJson);
+                printDataValue(asJson
+                    ? result
+                    : [
+                        '排列3数据迁移 bundle 已恢复。',
+                        `  数据库: ${result.databasePath}`,
+                        `  安全备份: ${result.safetyBackupPath || '无'}`,
+                        `  预测账本: ${result.ledgerRestoredPath || '未包含'}`,
+                    ].join('\n'), asJson);
                 return 0;
             }
             throw new Error(`未知 data bundle 子命令: ${bundleAction}`);
@@ -1224,7 +1361,11 @@ const resolveExperimentCodeCommit = () => {
             stdio: ['ignore', 'pipe', 'ignore'],
             maxBuffer: 32 * 1024 * 1024,
         });
-        const untracked = dirty.split(/\r?\n/).filter((line) => line.startsWith('?? ')).sort().join('\n');
+        const untracked = dirty
+            .split(/\r?\n/)
+            .filter((line) => line.startsWith('?? '))
+            .sort()
+            .join('\n');
         const worktreeHash = createHash('sha256').update(diff).update(untracked).digest('hex').slice(0, 16);
         return `${commit}-dirty-${worktreeHash}`;
     }
@@ -1257,13 +1398,15 @@ const runExperimentCommand = async (argv) => {
                     throw new Error('experiment create 必须提供 spec.json。');
                 const spec = JSON.parse(readFileSync(path.resolve(specPath), 'utf8'));
                 const created = createPl3Experiment(store, spec, resolveExperimentCodeCommit());
-                printDataValue(asJson ? created : [
-                    `实验已注册: ${created.experiment.experimentId}`,
-                    `  模式: ${created.experiment.mode}`,
-                    `  Dataset snapshot: ${created.experiment.datasetSnapshotId}`,
-                    `  Spec hash: ${created.experiment.specHash}`,
-                    `  Code commit: ${created.experiment.codeCommit}`,
-                ].join('\n'), asJson);
+                printDataValue(asJson
+                    ? created
+                    : [
+                        `实验已注册: ${created.experiment.experimentId}`,
+                        `  模式: ${created.experiment.mode}`,
+                        `  Dataset snapshot: ${created.experiment.datasetSnapshotId}`,
+                        `  Spec hash: ${created.experiment.specHash}`,
+                        `  Code commit: ${created.experiment.codeCommit}`,
+                    ].join('\n'), asJson);
                 return 0;
             }
             if (action === 'list') {
@@ -1281,16 +1424,18 @@ const runExperimentCommand = async (argv) => {
                 throw new Error(`experiment ${action} 必须提供 EXPERIMENT_ID。`);
             if (action === 'inspect') {
                 const inspected = inspectPl3Experiment(store, experimentId);
-                printDataValue(asJson ? inspected : [
-                    `实验: ${inspected.experiment.experimentId}`,
-                    `  名称: ${inspected.experiment.name}`,
-                    `  状态: ${inspected.experiment.status}`,
-                    `  模式: ${inspected.experiment.mode}`,
-                    `  Dataset snapshot: ${inspected.experiment.datasetSnapshotId}`,
-                    `  已完成折: ${inspected.folds.filter((fold) => fold.status === 'complete').length}`,
-                    `  审计记录: ${inspected.audit.length}`,
-                    `  报告: ${inspected.experiment.reportPath || '尚未生成'}`,
-                ].join('\n'), asJson);
+                printDataValue(asJson
+                    ? inspected
+                    : [
+                        `实验: ${inspected.experiment.experimentId}`,
+                        `  名称: ${inspected.experiment.name}`,
+                        `  状态: ${inspected.experiment.status}`,
+                        `  模式: ${inspected.experiment.mode}`,
+                        `  Dataset snapshot: ${inspected.experiment.datasetSnapshotId}`,
+                        `  已完成折: ${inspected.folds.filter((fold) => fold.status === 'complete').length}`,
+                        `  审计记录: ${inspected.audit.length}`,
+                        `  报告: ${inspected.experiment.reportPath || '尚未生成'}`,
+                    ].join('\n'), asJson);
                 return 0;
             }
             if (action === 'run' || action === 'resume') {
@@ -1301,20 +1446,24 @@ const runExperimentCommand = async (argv) => {
                     throw new Error(`experiment resume 只接受 interrupted 状态，当前为 ${current.status}。`);
                 }
                 const result = await runPl3Experiment(store, experimentId);
-                printDataValue(asJson ? result : [
-                    `实验开发区运行完成: ${experimentId}`,
-                    `  报告: ${result.reportPath}`,
-                    `  报告哈希: ${result.reportHash}`,
-                ].join('\n'), asJson);
+                printDataValue(asJson
+                    ? result
+                    : [
+                        `实验开发区运行完成: ${experimentId}`,
+                        `  报告: ${result.reportPath}`,
+                        `  报告哈希: ${result.reportHash}`,
+                    ].join('\n'), asJson);
                 return 0;
             }
             if (action === 'report') {
                 const result = await generatePl3ExperimentReport(store, experimentId);
-                printDataValue(asJson ? result : [
-                    `实验报告已生成: ${result.reportPath}`,
-                    `  Markdown: ${result.markdownPath}`,
-                    `  报告哈希: ${result.reportHash}`,
-                ].join('\n'), asJson);
+                printDataValue(asJson
+                    ? result
+                    : [
+                        `实验报告已生成: ${result.reportPath}`,
+                        `  Markdown: ${result.markdownPath}`,
+                        `  报告哈希: ${result.reportHash}`,
+                    ].join('\n'), asJson);
                 return 0;
             }
             if (action === 'evaluate') {
@@ -1322,11 +1471,13 @@ const runExperimentCommand = async (argv) => {
                     throw new Error('冻结评估必须同时提供 --frozen 和 --confirm。');
                 }
                 const result = await evaluatePl3ExperimentFrozen(store, experimentId);
-                printDataValue(asJson ? result : [
-                    `冻结区评估完成: ${experimentId}`,
-                    `  报告: ${result.reportPath}`,
-                    `  报告哈希: ${result.reportHash}`,
-                ].join('\n'), asJson);
+                printDataValue(asJson
+                    ? result
+                    : [
+                        `冻结区评估完成: ${experimentId}`,
+                        `  报告: ${result.reportPath}`,
+                        `  报告哈希: ${result.reportHash}`,
+                    ].join('\n'), asJson);
                 return 0;
             }
             throw new Error(`未知 experiment 子命令: ${action}`);
@@ -1351,7 +1502,9 @@ const runOpsCommand = async (argv) => {
     const dataDir = path.resolve(String(config.dataDir || '.lotterymcp-data'));
     try {
         if (action === 'run-once') {
-            const play = String(getArgumentValue(argv, '--play') || 'mixed').trim().toLowerCase();
+            const play = String(getArgumentValue(argv, '--play') || 'mixed')
+                .trim()
+                .toLowerCase();
             const periods = Number(getArgumentValue(argv, '--periods') || 200);
             const tickets = Number(getArgumentValue(argv, '--tickets') || 10);
             const result = await runPl3DailyOnce({
@@ -1359,6 +1512,7 @@ const runOpsCommand = async (argv) => {
                 periods,
                 tickets,
                 playType: play,
+                trainingStatus: getArgumentValue(argv, '--training-status'),
                 sync: !argv.includes('--no-sync'),
                 migrate: argv.includes('--migrate'),
                 notify: !argv.includes('--no-notify'),
@@ -1378,7 +1532,9 @@ const runOpsCommand = async (argv) => {
         if (action === 'serve-reports') {
             const host = getArgumentValue(argv, '--host') || '127.0.0.1';
             const port = Number(getArgumentValue(argv, '--port') || 4317);
-            const accessMode = String(getArgumentValue(argv, '--access-mode') || process.env.LOTTERYMCP_WEB_ACCESS_MODE || 'tunnel').trim().toLowerCase();
+            const accessMode = String(getArgumentValue(argv, '--access-mode') || process.env.LOTTERYMCP_WEB_ACCESS_MODE || 'tunnel')
+                .trim()
+                .toLowerCase();
             if (accessMode !== 'tunnel' && accessMode !== 'public') {
                 throw new Error('serve-reports 的 --access-mode 只支持 tunnel 或 public。');
             }

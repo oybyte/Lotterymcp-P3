@@ -9,6 +9,7 @@ lotterymcp init --mode official --data-dir .lotterymcp-data --periods 200
 lotterymcp data sync --full
 lotterymcp data import --file history.json
 lotterymcp data status
+lotterymcp data sla
 lotterymcp data snapshot create --last 2000
 lotterymcp data bundle create --output transfer-bundle
 lotterymcp data migrate --dry-run
@@ -34,4 +35,4 @@ remote 模式继续使用 `NEUXSBOT_API_BASE_URL` 和 `NEUXSBOT_TOKEN`。设置 
 
 正式实验只接受 confirmed dataset snapshot。冻结区必须通过 `experiment evaluate EXPERIMENT_ID --frozen --confirm` 显式解封，且每个实验只允许尝试一次。
 
-候选分数不是中奖概率，walk-forward 回测和名义 ROI 不代表未来收益。单来源开奖只产生暂定复盘；双官方来源一致后才视为确认。
+候选分数不是中奖概率，walk-forward 回测和名义 ROI 不代表未来收益。单来源开奖只产生暂定复盘；双官方来源一致后才视为确认。`data sla` 输出每条预测与目标期首次本地 observation 的时间证据，仅证明预测早于本地首次观测，不构成第三方开奖前时间戳证明。

@@ -5,18 +5,16 @@ import path from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { parse } from 'csv-parse/sync'
 import { stringify } from 'csv-stringify/sync'
-import {
-  openPl3Store,
-  writeJsonAtomically,
-  type Pl3SourceRecord,
-} from 'lotterymcp-core'
+import { openPl3Store, writeJsonAtomically, type Pl3SourceRecord } from 'lotterymcp-core'
 
 export type Pl3FileFormat = 'json' | 'csv'
 
 const sha256 = (value: Buffer | string) => createHash('sha256').update(value).digest('hex')
 
 const resolveFormat = (filePath: string, value?: string): Pl3FileFormat => {
-  const format = String(value || path.extname(filePath).slice(1)).trim().toLowerCase()
+  const format = String(value || path.extname(filePath).slice(1))
+    .trim()
+    .toLowerCase()
   if (format !== 'json' && format !== 'csv') {
     throw new Error(`不支持的排列3文件格式: ${format || '(空)'}，只支持 json/csv。`)
   }
@@ -56,18 +54,16 @@ const parseCsvRecords = (rawText: string): Pl3SourceRecord[] => {
   })
 }
 
-export const importPl3FileToStore = async (input: {
-  dataDir: string
-  filePath: string
-  format?: string
-}) => {
+export const importPl3FileToStore = async (input: { dataDir: string; filePath: string; format?: string }) => {
   const filePath = path.resolve(input.filePath)
   const format = resolveFormat(filePath, input.format)
   let raw: Buffer
   try {
     raw = await readFile(filePath)
   } catch (error) {
-    throw new Error(`无法读取排列3导入文件: ${filePath} (${error instanceof Error ? error.message : String(error)})`)
+    throw new Error(`无法读取排列3导入文件: ${filePath} (${error instanceof Error ? error.message : String(error)})`, {
+      cause: error,
+    })
   }
   const rawText = raw.toString('utf8')
   const records = format === 'json' ? parseJsonRecords(rawText) : parseCsvRecords(rawText)
@@ -98,11 +94,7 @@ export const importPl3FileToStore = async (input: {
   }
 }
 
-export const exportPl3Store = async (input: {
-  dataDir: string
-  outputPath: string
-  format?: string
-}) => {
+export const exportPl3Store = async (input: { dataDir: string; outputPath: string; format?: string }) => {
   const outputPath = path.resolve(input.outputPath)
   const format = resolveFormat(outputPath, input.format)
   const store = openPl3Store({ dataDir: input.dataDir, readonly: true, fileMustExist: true })
@@ -118,16 +110,19 @@ export const exportPl3Store = async (input: {
         records,
       })
     } else {
-      const csv = stringify(records.map((record) => ({
-        lotteryType: record.lotteryType,
-        period: record.period,
-        drawDate: record.drawDate,
-        numbers: record.numbers,
-        status: record.status,
-        provider: record.provider,
-        sourceUrl: record.sourceUrl || '',
-        observedAt: record.observedAt,
-      })), { header: true })
+      const csv = stringify(
+        records.map((record) => ({
+          lotteryType: record.lotteryType,
+          period: record.period,
+          drawDate: record.drawDate,
+          numbers: record.numbers,
+          status: record.status,
+          provider: record.provider,
+          sourceUrl: record.sourceUrl || '',
+          observedAt: record.observedAt,
+        })),
+        { header: true },
+      )
       await writeAtomically(outputPath, csv)
     }
     return { databasePath: store.databasePath, outputPath, format, recordCount: records.length }

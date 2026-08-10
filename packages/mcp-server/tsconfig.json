@@ -5,9 +5,7 @@
     "moduleResolution": "NodeNext",
     "baseUrl": ".",
     "paths": {
-      "lotterymcp-core": [
-        "../core/src/index.ts"
-      ]
+      "lotterymcp-core": ["../core/src/index.ts"]
     },
     "strict": true,
     "declaration": true,
@@ -16,13 +14,9 @@
     "composite": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "lib": [
-      "ES2022"
-    ]
+    "lib": ["ES2022"]
   },
-  "include": [
-    "src/**/*.ts"
-  ],
+  "include": ["src/**/*.ts"],
   "references": [
     {
       "path": "../core"

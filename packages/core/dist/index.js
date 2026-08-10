@@ -8,12 +8,7 @@ export * from './pl3-features.js';
 export * from './pl3-experiments.js';
 /** @deprecated Provider selection is dynamic. Read meta.provider instead. */
 export const LOTTERY_MCP_PROVIDER = 'remote';
-export const PL3_DATA_TOOLS = [
-    'lottery.latest',
-    'lottery.history',
-    'lottery.periods',
-    'lottery.summary',
-];
+export const PL3_DATA_TOOLS = ['lottery.latest', 'lottery.history', 'lottery.periods', 'lottery.summary'];
 export const PL3_MCP_TOOLS = [...PL3_DATA_TOOLS, 'lottery.predict'];
 /** @deprecated Use PL3_DATA_TOOLS instead. */
 export const LOTTERY_MCP_TOOLS = PL3_DATA_TOOLS;
@@ -88,14 +83,18 @@ const createApiError = (statusCode, payload) => new McpApiError({
     code: typeof payload?.code === 'string' ? payload.code : undefined,
     upgradeUrl: typeof payload?.upgradeUrl === 'string' ? payload.upgradeUrl : undefined,
     displayMode: typeof payload?.displayMode === 'string' ? payload.displayMode : undefined,
-    action: payload?.action && typeof payload.action === 'object'
-        ? payload.action
-        : undefined,
+    action: payload?.action && typeof payload.action === 'object' ? payload.action : undefined,
     data: payload,
 });
-const normalizeDataMode = (value) => String(value || '').trim().toLowerCase() === 'official' ? 'official' : 'remote';
+const normalizeDataMode = (value) => String(value || '')
+    .trim()
+    .toLowerCase() === 'official'
+    ? 'official'
+    : 'remote';
 export const normalizeLotteryType = (value = PL3_LOTTERY_TYPE) => {
-    const lotteryType = String(value || PL3_LOTTERY_TYPE).trim().toLowerCase();
+    const lotteryType = String(value || PL3_LOTTERY_TYPE)
+        .trim()
+        .toLowerCase();
     if (lotteryType !== PL3_LOTTERY_TYPE) {
         throw new McpApiError({
             statusCode: 400,
@@ -181,7 +180,7 @@ const readOfficialCache = async (dataDir, lotteryType) => {
         }
     }
     const cachePath = path.join(dataDir, `${normalizedLotteryType}.json`);
-    let rawText = '';
+    let rawText;
     try {
         rawText = await readFile(cachePath, 'utf8');
     }
@@ -374,7 +373,9 @@ const normalizeRemotePeriods = (value) => {
         const source = item;
         const lotteryType = normalizeLotteryType(source.lotteryType);
         const period = String(source.period || '').trim();
-        const drawDate = String(source.drawDate || '').trim().slice(0, 10);
+        const drawDate = String(source.drawDate || '')
+            .trim()
+            .slice(0, 10);
         if (!/^\d{5,12}$/.test(period))
             throw new Error(`无效期号: ${period || '(空)'}`);
         if (!isValidPl3DrawDate(drawDate))
@@ -474,7 +475,7 @@ export const createLotteryMcpClient = (config) => {
         token,
         defaultPeriods,
         getHealth: () => request('health'),
-        getLatest: async (query) => normalizeRemoteEnvelope(await request('lottery/latest', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }), (value) => value === null ? null : normalizeRemoteDraw(value)),
+        getLatest: async (query) => normalizeRemoteEnvelope(await request('lottery/latest', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }), (value) => (value === null ? null : normalizeRemoteDraw(value))),
         getHistory: async (query) => normalizeRemoteEnvelope(await request('lottery/history', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }), (value) => {
             if (!Array.isArray(value))
                 throw new Error('历史数据不是数组。');

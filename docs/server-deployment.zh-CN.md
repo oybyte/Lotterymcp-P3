@@ -121,10 +121,16 @@ docker compose exec worker node packages/cli/dist/index.js ops reports
 docker compose logs --tail=100 worker
 ```
 
-手动跑一次预测：
+worker 容器按 `LOTTERYMCP_DAILY_INTERVAL_SECONDS`（默认 86400 秒）轮询：每日预测（含 schema 迁移）、数据库备份与 raw GC 均自动执行。手动跑一次预测：
 
 ```bash
 docker compose exec worker node packages/cli/dist/index.js ops run-once --migrate
+```
+
+查看预测时间证据：
+
+```bash
+docker compose exec worker node packages/cli/dist/index.js data sla
 ```
 
 创建可下载备份包：

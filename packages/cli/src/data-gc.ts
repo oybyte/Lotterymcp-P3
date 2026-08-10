@@ -43,7 +43,7 @@ const walkFiles = async (root: string, current = root): Promise<string[]> => {
   for (const entry of entries) {
     const fullPath = path.join(current, entry.name)
     if (entry.isSymbolicLink()) throw new Error(`raw 目录包含符号链接，拒绝 GC: ${fullPath}`)
-    if (entry.isDirectory()) files.push(...await walkFiles(root, fullPath))
+    if (entry.isDirectory()) files.push(...(await walkFiles(root, fullPath)))
     else if (entry.isFile()) files.push(normalizeRelative(path.relative(root, fullPath)))
   }
   return files
@@ -59,7 +59,7 @@ const collectManifestReferences = async (dataDir: string, rawDir: string, refere
     try {
       const parsed = JSON.parse(await readFile(manifestPath, 'utf8'))
       if (Array.isArray(parsed?.responses)) {
-        parsed.responses.forEach((response: any) => {
+        parsed.responses.forEach((response: { rawPath?: unknown }) => {
           if (typeof response?.rawPath === 'string') references.add(normalizeRelative(response.rawPath))
         })
       }
@@ -79,7 +79,7 @@ const collectCheckpointReferences = async (dataDir: string, rawDir: string, refe
     try {
       const parsed = JSON.parse(await readFile(checkpointPath, 'utf8'))
       if (Array.isArray(parsed?.pages)) {
-        parsed.pages.forEach((page: any) => {
+        parsed.pages.forEach((page: { rawPath?: unknown }) => {
           if (typeof page?.rawPath === 'string') references.add(normalizeRelative(page.rawPath))
         })
       }
@@ -89,10 +89,13 @@ const collectCheckpointReferences = async (dataDir: string, rawDir: string, refe
   }
 }
 
-const buildPlanHash = (plan: Omit<GcPlan, 'planHash'>) => sha256(JSON.stringify({
-  ...plan,
-  candidates: [...plan.candidates].sort((left, right) => left.relativePath.localeCompare(right.relativePath)),
-}))
+const buildPlanHash = (plan: Omit<GcPlan, 'planHash'>) =>
+  sha256(
+    JSON.stringify({
+      ...plan,
+      candidates: [...plan.candidates].sort((left, right) => left.relativePath.localeCompare(right.relativePath)),
+    }),
+  )
 
 export const createPl3RawGcPlan = async (dataDir: string): Promise<GcPlan> => {
   const resolvedDataDir = path.resolve(dataDir)
@@ -110,7 +113,12 @@ export const createPl3RawGcPlan = async (dataDir: string): Promise<GcPlan> => {
   const candidates: GcCandidate[] = []
   const cutoff = Date.now() - GC_MIN_AGE_MS
   for (const relativeToRaw of await walkFiles(rawDir)) {
-    if (relativeToRaw === 'gc-plan.json' || relativeToRaw.startsWith('checkpoints/') || relativeToRaw.startsWith('manifests/')) continue
+    if (
+      relativeToRaw === 'gc-plan.json' ||
+      relativeToRaw.startsWith('checkpoints/') ||
+      relativeToRaw.startsWith('manifests/')
+    )
+      continue
     const relativePath = normalizeRelative(path.join('raw', relativeToRaw))
     if (references.has(relativePath)) continue
     const filePath = resolveInside(resolvedDataDir, relativePath)

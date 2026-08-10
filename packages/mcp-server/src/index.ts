@@ -50,8 +50,7 @@ const parsePl3LotteryType = (value: unknown): Pl3LotteryType | undefined => {
   })
 }
 
-const pl3LotteryTypeSchema = () =>
-  z.literal(PL3_LOTTERY_TYPE).optional().describe('可选。省略时默认 pl3。')
+const pl3LotteryTypeSchema = () => z.literal(PL3_LOTTERY_TYPE).optional().describe('可选。省略时默认 pl3。')
 
 const serializeToolPayload = (payload: unknown) => JSON.stringify(payload, null, 2)
 
@@ -115,8 +114,7 @@ export const createLotteryToolCatalog = (
         lotteryType: pl3LotteryTypeSchema(),
       },
       handler: async (args) =>
-        withToolExecution(() =>
-          client.getLatest({ lotteryType: parsePl3LotteryType(args.lotteryType) })),
+        withToolExecution(() => client.getLatest({ lotteryType: parsePl3LotteryType(args.lotteryType) })),
     },
     {
       name: 'lottery.history',
@@ -138,7 +136,8 @@ export const createLotteryToolCatalog = (
             toDate: typeof args.toDate === 'string' ? args.toDate : undefined,
             page: typeof args.page === 'number' ? args.page : undefined,
             limit: typeof args.limit === 'number' ? args.limit : fallbackLimit,
-          })),
+          }),
+        ),
     },
     {
       name: 'lottery.periods',
@@ -154,7 +153,8 @@ export const createLotteryToolCatalog = (
             lotteryType: parsePl3LotteryType(args.lotteryType),
             page: typeof args.page === 'number' ? args.page : undefined,
             limit: typeof args.limit === 'number' ? args.limit : fallbackLimit,
-          })),
+          }),
+        ),
     },
     {
       name: 'lottery.summary',
@@ -166,7 +166,8 @@ export const createLotteryToolCatalog = (
         withToolExecution(() =>
           client.getSummary({
             lotteryType: parsePl3LotteryType(args.lotteryType),
-          })),
+          }),
+        ),
     },
     {
       name: 'lottery.predict',
@@ -176,14 +177,25 @@ export const createLotteryToolCatalog = (
         periods: z.number().int().min(100).max(1000).optional().describe('可选。读取历史期数，默认 200。'),
         tickets: z.number().int().min(1).max(100).optional().describe('可选。候选注数，默认 10。'),
         playType: z.enum(['direct', 'group3', 'group6', 'mixed']).optional().describe('可选。玩法，默认 mixed。'),
+        trainingStatus: z
+          .enum(['confirmed', 'mixed'])
+          .optional()
+          .describe(
+            '可选。训练窗口的数据状态基线：confirmed 只用双官方源确认记录训练，mixed 混合单来源（默认 mixed）。',
+          ),
       },
       handler: async (args) =>
-        withToolExecution(() => predictionService.predict({
-          lotteryType: parsePl3LotteryType(args.lotteryType),
-          periods: typeof args.periods === 'number' ? args.periods : undefined,
-          tickets: typeof args.tickets === 'number' ? args.tickets : undefined,
-          playType: typeof args.playType === 'string' ? args.playType as Pl3PlayType : undefined,
-        })),
+        withToolExecution(() =>
+          predictionService.predict({
+            lotteryType: parsePl3LotteryType(args.lotteryType),
+            periods: typeof args.periods === 'number' ? args.periods : undefined,
+            tickets: typeof args.tickets === 'number' ? args.tickets : undefined,
+            playType: typeof args.playType === 'string' ? (args.playType as Pl3PlayType) : undefined,
+            ...(args.trainingStatus === 'confirmed' || args.trainingStatus === 'mixed'
+              ? { trainingStatus: args.trainingStatus }
+              : {}),
+          }),
+        ),
     },
   ]
 }

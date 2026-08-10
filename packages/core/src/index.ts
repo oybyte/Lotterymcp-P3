@@ -29,12 +29,7 @@ export * from './pl3-experiments.js'
 /** @deprecated Provider selection is dynamic. Read meta.provider instead. */
 export const LOTTERY_MCP_PROVIDER = 'remote'
 
-export const PL3_DATA_TOOLS = [
-  'lottery.latest',
-  'lottery.history',
-  'lottery.periods',
-  'lottery.summary',
-] as const
+export const PL3_DATA_TOOLS = ['lottery.latest', 'lottery.history', 'lottery.periods', 'lottery.summary'] as const
 
 export const PL3_MCP_TOOLS = [...PL3_DATA_TOOLS, 'lottery.predict'] as const
 
@@ -165,7 +160,6 @@ export type Pl3PredictionService = {
     provisional: number
     confirmed: number
     disputed: number
-    settled: number
   }>
 }
 
@@ -267,7 +261,7 @@ const buildSearchParams = (query?: Record<string, unknown>) => {
   return searchParams
 }
 
-const parseJsonSafely = (rawText: string) => {
+const parseJsonSafely = (rawText: string): Record<string, unknown> => {
   if (!rawText) {
     return {}
   }
@@ -281,25 +275,28 @@ const parseJsonSafely = (rawText: string) => {
   }
 }
 
-const createApiError = (statusCode: number, payload: any) =>
+const createApiError = (statusCode: number, payload: Record<string, unknown>) =>
   new McpApiError({
     statusCode,
     message: String(payload?.message || '网站接口请求失败'),
     code: typeof payload?.code === 'string' ? payload.code : undefined,
     upgradeUrl: typeof payload?.upgradeUrl === 'string' ? payload.upgradeUrl : undefined,
     displayMode: typeof payload?.displayMode === 'string' ? payload.displayMode : undefined,
-    action:
-      payload?.action && typeof payload.action === 'object'
-        ? (payload.action as McpAction)
-        : undefined,
+    action: payload?.action && typeof payload.action === 'object' ? (payload.action as McpAction) : undefined,
     data: payload,
   })
 
 const normalizeDataMode = (value: unknown): Pl3DataMode =>
-  String(value || '').trim().toLowerCase() === 'official' ? 'official' : 'remote'
+  String(value || '')
+    .trim()
+    .toLowerCase() === 'official'
+    ? 'official'
+    : 'remote'
 
 export const normalizeLotteryType = (value: unknown = PL3_LOTTERY_TYPE) => {
-  const lotteryType = String(value || PL3_LOTTERY_TYPE).trim().toLowerCase()
+  const lotteryType = String(value || PL3_LOTTERY_TYPE)
+    .trim()
+    .toLowerCase()
 
   if (lotteryType !== PL3_LOTTERY_TYPE) {
     throw new McpApiError({
@@ -392,7 +389,7 @@ const readOfficialCache = async (dataDir: string, lotteryType: Pl3LotteryType) =
   }
 
   const cachePath = path.join(dataDir, `${normalizedLotteryType}.json`)
-  let rawText = ''
+  let rawText: string
 
   try {
     rawText = await readFile(cachePath, 'utf8')
@@ -405,7 +402,7 @@ const readOfficialCache = async (dataDir: string, lotteryType: Pl3LotteryType) =
     })
   }
 
-  const parsed = parseJsonSafely(rawText) as any
+  const parsed = parseJsonSafely(rawText)
   const records = Array.isArray(parsed) ? parsed : parsed?.records
 
   if (!Array.isArray(records)) {
@@ -572,10 +569,7 @@ const invalidRemoteResponse = (message: string, data: unknown) =>
     data,
   })
 
-const normalizeRemoteEnvelope = <T>(
-  payload: unknown,
-  normalizeData: (value: unknown) => T,
-): McpEnvelope<T> => {
+const normalizeRemoteEnvelope = <T>(payload: unknown, normalizeData: (value: unknown) => T): McpEnvelope<T> => {
   if (!payload || typeof payload !== 'object') {
     throw invalidRemoteResponse('响应不是对象。', payload)
   }
@@ -606,7 +600,9 @@ const normalizeRemotePeriods = (value: unknown): Pl3PeriodRecord[] => {
     const source = item as Record<string, unknown>
     const lotteryType = normalizeLotteryType(source.lotteryType)
     const period = String(source.period || '').trim()
-    const drawDate = String(source.drawDate || '').trim().slice(0, 10)
+    const drawDate = String(source.drawDate || '')
+      .trim()
+      .slice(0, 10)
     if (!/^\d{5,12}$/.test(period)) throw new Error(`无效期号: ${period || '(空)'}`)
     if (!isValidPl3DrawDate(drawDate)) throw new Error(`第 ${period} 期的开奖日期无效。`)
     return { lotteryType, period, drawDate }
@@ -633,9 +629,7 @@ const normalizeRemoteSummary = (value: unknown): Pl3Summary | null => {
   }
 }
 
-export const createLotteryMcpClient = (
-  config: LotteryMcpClientConfig,
-): LotteryMcpClient => {
+export const createLotteryMcpClient = (config: LotteryMcpClientConfig): LotteryMcpClient => {
   if (normalizeDataMode(config.dataMode) === 'official') {
     const provider = createOfficialLocalProvider(config)
     return {
@@ -714,25 +708,29 @@ export const createLotteryMcpClient = (
     token,
     defaultPeriods,
     getHealth: () => request<McpHealthResponse>('health'),
-    getLatest: async (query) => normalizeRemoteEnvelope(
-      await request<unknown>('lottery/latest', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }),
-      (value) => value === null ? null : normalizeRemoteDraw(value),
-    ),
-    getHistory: async (query) => normalizeRemoteEnvelope(
-      await request<unknown>('lottery/history', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }),
-      (value) => {
-        if (!Array.isArray(value)) throw new Error('历史数据不是数组。')
-        return normalizePl3DrawRecords(value as Pl3SourceRecord[], '排列3远端历史数据无效').reverse()
-      },
-    ),
-    getPeriods: async (query) => normalizeRemoteEnvelope(
-      await request<unknown>('lottery/periods', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }),
-      normalizeRemotePeriods,
-    ),
-    getSummary: async (query) => normalizeRemoteEnvelope(
-      await request<unknown>('lottery/summary', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }),
-      normalizeRemoteSummary,
-    ),
+    getLatest: async (query) =>
+      normalizeRemoteEnvelope(
+        await request<unknown>('lottery/latest', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }),
+        (value) => (value === null ? null : normalizeRemoteDraw(value)),
+      ),
+    getHistory: async (query) =>
+      normalizeRemoteEnvelope(
+        await request<unknown>('lottery/history', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }),
+        (value) => {
+          if (!Array.isArray(value)) throw new Error('历史数据不是数组。')
+          return normalizePl3DrawRecords(value as Pl3SourceRecord[], '排列3远端历史数据无效').reverse()
+        },
+      ),
+    getPeriods: async (query) =>
+      normalizeRemoteEnvelope(
+        await request<unknown>('lottery/periods', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }),
+        normalizeRemotePeriods,
+      ),
+    getSummary: async (query) =>
+      normalizeRemoteEnvelope(
+        await request<unknown>('lottery/summary', { ...query, lotteryType: normalizeLotteryType(query.lotteryType) }),
+        normalizeRemoteSummary,
+      ),
   }
 }
 

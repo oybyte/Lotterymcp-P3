@@ -71,7 +71,7 @@ const sha256 = (value: string | Buffer) => createHash('sha256').update(value).di
 const round = (value: number) => Number(value.toFixed(12))
 const zeroes = (length: number) => Array.from({ length }, () => 0)
 const frequencies = (counts: readonly number[], denominator: number) =>
-  counts.map((count) => denominator > 0 ? round(count / denominator) : 0)
+  counts.map((count) => (denominator > 0 ? round(count / denominator) : 0))
 
 const numberType = (numbers: readonly number[]): Pl3NumberType => {
   const unique = new Set(numbers).size
@@ -80,16 +80,21 @@ const numberType = (numbers: readonly number[]): Pl3NumberType => {
 
 const buildPositionCounts = (records: readonly Pl3Record[]) => {
   const counts = [zeroes(10), zeroes(10), zeroes(10)]
-  records.forEach((record) => record.numbersList.forEach((digit, position) => {
-    counts[position]![digit] += 1
-  }))
+  records.forEach((record) =>
+    record.numbersList.forEach((digit, position) => {
+      counts[position]![digit] += 1
+    }),
+  )
   return counts
 }
 
-const entropy = (distribution: readonly number[]) => round(distribution.reduce(
-  (total, probability) => probability > 0 ? total - probability * Math.log(probability) : total,
-  0,
-))
+const entropy = (distribution: readonly number[]) =>
+  round(
+    distribution.reduce(
+      (total, probability) => (probability > 0 ? total - probability * Math.log(probability) : total),
+      0,
+    ),
+  )
 
 const concentration = (distribution: readonly number[]) =>
   round(distribution.reduce((total, probability) => total + probability ** 2, 0))
@@ -104,33 +109,35 @@ const jsDivergence = (left: readonly number[], right: readonly number[]) => {
   const p = normalize(left)
   const q = normalize(right)
   const midpoint = p.map((value, index) => (value + q[index]!) / 2)
-  const kl = (source: readonly number[]) => source.reduce(
-    (total, value, index) => total + value * Math.log(value / midpoint[index]!),
-    0,
-  )
+  const kl = (source: readonly number[]) =>
+    source.reduce((total, value, index) => total + value * Math.log(value / midpoint[index]!), 0)
   return round((kl(p) + kl(q)) / 2)
 }
 
 const buildMeanIntervals = (records: readonly Pl3Record[]) => {
-  const positions = Array.from({ length: 3 }, () =>
-    Array.from({ length: 10 }, () => [] as number[]),
+  const positions = Array.from({ length: 3 }, () => Array.from({ length: 10 }, () => [] as number[]))
+  records.forEach((record, index) =>
+    record.numbersList.forEach((digit, position) => {
+      positions[position]![digit]!.push(index)
+    }),
   )
-  records.forEach((record, index) => record.numbersList.forEach((digit, position) => {
-    positions[position]![digit]!.push(index)
-  }))
-  return positions.map((digits) => digits.map((indices) => {
-    if (indices.length < 2) return null
-    let total = 0
-    for (let index = 1; index < indices.length; index += 1) total += indices[index]! - indices[index - 1]!
-    return round(total / (indices.length - 1))
-  }))
+  return positions.map((digits) =>
+    digits.map((indices) => {
+      if (indices.length < 2) return null
+      let total = 0
+      for (let index = 1; index < indices.length; index += 1) total += indices[index]! - indices[index - 1]!
+      return round(total / (indices.length - 1))
+    }),
+  )
 }
 
 const buildCurrentOmission = (records: readonly Pl3Record[]) => {
   const omission = Array.from({ length: 3 }, () => zeroes(10).map(() => records.length))
-  records.forEach((record, index) => record.numbersList.forEach((digit, position) => {
-    omission[position]![digit] = records.length - 1 - index
-  }))
+  records.forEach((record, index) =>
+    record.numbersList.forEach((digit, position) => {
+      omission[position]![digit] = records.length - 1 - index
+    }),
+  )
   return omission
 }
 
@@ -146,7 +153,9 @@ const buildWindowFeatures = (records: readonly Pl3Record[], window: number): Pl3
   const numberTypeCounts: Record<Pl3NumberType, number> = { triple: 0, group3: 0, group6: 0 }
 
   recent.forEach((record) => {
-    record.numbersList.forEach((digit) => { globalDigitCounts[digit] += 1 })
+    record.numbersList.forEach((digit) => {
+      globalDigitCounts[digit] += 1
+    })
     const sum = record.numbersList.reduce((total, digit) => total + digit, 0)
     const span = Math.max(...record.numbersList) - Math.min(...record.numbersList)
     const oddCount = record.numbersList.filter((digit) => digit % 2 === 1).length
@@ -156,9 +165,8 @@ const buildWindowFeatures = (records: readonly Pl3Record[], window: number): Pl3
     numberTypeCounts[numberType(record.numbersList)] += 1
   })
 
-  const previousFrequency = previous.length > 0
-    ? buildPositionCounts(previous).map((counts) => frequencies(counts, previous.length))
-    : null
+  const previousFrequency =
+    previous.length > 0 ? buildPositionCounts(previous).map((counts) => frequencies(counts, previous.length)) : null
   return {
     requestedWindow: window,
     availableCount: recent.length,
@@ -183,9 +191,9 @@ const buildWindowFeatures = (records: readonly Pl3Record[], window: number): Pl3
     positionEntropy: positionFrequency.map(entropy),
     positionConcentration: positionFrequency.map(concentration),
     positionFrequencyChange: previousFrequency
-      ? positionFrequency.map((distribution, position) => distribution.map(
-          (value, digit) => round(value - previousFrequency[position]![digit]!),
-        ))
+      ? positionFrequency.map((distribution, position) =>
+          distribution.map((value, digit) => round(value - previousFrequency[position]![digit]!)),
+        )
       : null,
     positionJsDivergence: previousFrequency
       ? positionFrequency.map((distribution, position) => jsDivergence(distribution, previousFrequency[position]!))
@@ -235,13 +243,15 @@ export const createPl3FeatureSnapshot = (
     throw new Error(`afterPeriod ${input.afterPeriod} 不是 dataset snapshot 中的有效期号。`)
   }
   const windowConfigHash = sha256(canonicalize(windows))
-  const featureSnapshotId = sha256(canonicalize({
-    schemaVersion: 1,
-    datasetSnapshotId: input.datasetSnapshotId,
-    afterPeriod: input.afterPeriod,
-    featureVersion,
-    windowConfigHash,
-  }))
+  const featureSnapshotId = sha256(
+    canonicalize({
+      schemaVersion: 1,
+      datasetSnapshotId: input.datasetSnapshotId,
+      afterPeriod: input.afterPeriod,
+      featureVersion,
+      windowConfigHash,
+    }),
+  )
   const existing = store.getFeatureSnapshot(featureSnapshotId)
   if (existing) return decodeStoredSnapshot(existing)
 

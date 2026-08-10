@@ -31,6 +31,7 @@ export type Pl3PredictionQuery = {
     playType?: Pl3PlayType;
     generatedAt?: string;
     payouts?: Partial<Pl3PayoutConfig>;
+    trainingStatus?: 'confirmed' | 'mixed';
 };
 export type Pl3Ticket = {
     rank: number;
@@ -40,6 +41,16 @@ export type Pl3Ticket = {
     score: number;
     pairDigit?: number;
     singleDigit?: number;
+    scoreComposition?: Pl3TicketScoreComposition;
+};
+export type Pl3TicketScoreComposition = {
+    positionFrequency: number;
+    digitFrequency: number;
+    sumFrequency: number;
+    oddEvenFrequency: number;
+    spanFrequency: number;
+    numberTypeFrequency: number;
+    leadingFeature: keyof Pl3TicketScoreComposition;
 };
 export type Pl3BacktestPlayMetrics = {
     ticketsPerDraw: number;
@@ -100,6 +111,13 @@ export type Pl3SettlementRevision = {
     revisedAt: string;
     reason: string;
 };
+export type Pl3PredictionDataStatus = {
+    confirmedRecords: number;
+    singleSourceRecords: number;
+    conflictRecords: number;
+    unclassifiedRecords: number;
+    dualSourceCoverage: number | null;
+};
 export type Pl3PredictionResult = {
     predictionId: string;
     lotteryType: Pl3LotteryType;
@@ -111,6 +129,7 @@ export type Pl3PredictionResult = {
         fromPeriod: string;
         toPeriod: string;
         trainingDataHash: string;
+        dataStatus: Pl3PredictionDataStatus;
     };
     model: {
         name: 'weighted-frequency';
@@ -122,6 +141,7 @@ export type Pl3PredictionResult = {
         periods: number;
         tickets: number;
         playType: Pl3PlayType;
+        trainingStatus: 'confirmed' | 'mixed';
     };
     payouts: Pl3PayoutConfig & {
         note: string;
@@ -145,6 +165,7 @@ export declare const PL3_DEFAULT_PERIODS = 200;
 export declare const PL3_MAX_PERIODS = 1000;
 export declare const PL3_DEFAULT_TICKETS = 10;
 export declare const PL3_MAX_TICKETS = 100;
+export declare const PL3_DEFAULT_TRAINING_STATUS: "mixed";
 export declare const PL3_MODEL_WEIGHTS: {
     readonly positionFrequency: 0.3;
     readonly digitFrequency: 0.2;
@@ -175,5 +196,27 @@ export declare const getPl3PredictionLedgerSummary: (ledgerPath: string) => Prom
     provisional: number;
     confirmed: number;
     disputed: number;
-    settled: number;
+}>;
+export type Pl3SlaEvidenceItem = {
+    predictionId: string;
+    afterPeriod: string;
+    generatedAt: string;
+    targetPeriod: string | null;
+    firstObservedAt: string | null;
+    predictedBeforeFirstObservation: boolean | null;
+};
+export declare const verifyPl3PredictionSla: (ledgerPath: string, getEvidence: (prediction: {
+    afterPeriod: string;
+    generatedAt: string;
+}) => {
+    targetPeriod: string | null;
+    firstObservedAt: string | null;
+    predictedBeforeFirstObservation: boolean | null;
+}) => Promise<{
+    total: number;
+    withEvidence: number;
+    verifiedBeforeObservation: number;
+    violated: number;
+    pendingEvidence: number;
+    items: Pl3SlaEvidenceItem[];
 }>;

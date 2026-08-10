@@ -30,6 +30,14 @@ export type Pl3StoreStatus = {
     completenessStatus: 'known' | 'unknown';
     legacyPredictionCount: number;
 };
+export type Pl3YearConfidence = {
+    year: string;
+    totalPeriods: number;
+    confirmedRecords: number;
+    singleSourceRecords: number;
+    conflictRecords: number;
+    dualSourceCoverage: number | null;
+};
 export type Pl3ImportOptions = {
     provider: Pl3ObservationProvider;
     sourceUrl?: string;
@@ -67,6 +75,12 @@ export type Pl3ArchivePageInput = {
 export type Pl3ArchiveImportResult = Omit<Pl3ImportResult, 'snapshotId'> & {
     sourceSnapshotCount: number;
     sourceSnapshotIds: string[];
+};
+export type Pl3ReconcileHistoryResult = {
+    scannedPeriods: number;
+    upgradedToConfirmed: number;
+    remainingSingleSource: number;
+    remainingConflicts: number;
 };
 export type Pl3StoreQuery = {
     period?: string;
@@ -207,6 +221,20 @@ export type Pl3NotificationDelivery = {
     errorMessage: string | null;
     deliveredAt: string;
 };
+type ExperimentAuditRow = {
+    audit_id: number;
+    action: string;
+    status: string;
+    details_json: string;
+    created_at: string;
+};
+type RuntimeLockRow = {
+    lock_name: string;
+    owner_id: string;
+    owner_pid: number;
+    acquired_at: string;
+    expires_at: string;
+};
 export declare class Pl3Store {
     readonly databasePath: string;
     private readonly database;
@@ -226,6 +254,8 @@ export declare class Pl3Store {
     importArchivePages(pages: readonly Pl3ArchivePageInput[], options?: {
         authoritativeTotal?: number;
     }): Pl3ArchiveImportResult;
+    reconcileHistory(): Pl3ReconcileHistoryResult;
+    private getDrawStatus;
     recordArchivePages(pages: readonly Pl3ArchivePageInput[]): string[];
     resolveConflict(input: {
         period: string;
@@ -255,6 +285,22 @@ export declare class Pl3Store {
     }[];
     getStatus(): Pl3StoreStatus;
     listReferencedRawPaths(): string[];
+    getConfidenceByYear(): Pl3YearConfidence[];
+    getDrawObservationEvidence(period: string): {
+        period: string;
+        firstObservedAt: string | null;
+        lastObservedAt: string | null;
+        sourceCount: number | null;
+    } | null;
+    getPredictionSlaEvidence(prediction: {
+        afterPeriod: string;
+        generatedAt: string;
+    }): {
+        targetPeriod: string | null;
+        predictedAt: string;
+        firstObservedAt: string | null;
+        predictedBeforeFirstObservation: boolean | null;
+    };
     createDatasetSnapshot(input?: {
         fromPeriod?: string;
         afterPeriod?: string;
@@ -303,9 +349,9 @@ export declare class Pl3Store {
     acquireRuntimeLock(lockName: string, ownerId: string, leaseMs?: number): boolean;
     renewRuntimeLock(lockName: string, ownerId: string, leaseMs?: number): void;
     releaseRuntimeLock(lockName: string, ownerId: string): void;
-    listRuntimeLocks(): unknown[];
+    listRuntimeLocks(): RuntimeLockRow[];
     addExperimentAudit(experimentId: string, action: string, status: string, details?: unknown): void;
-    listExperimentAudit(experimentId: string): unknown[];
+    listExperimentAudit(experimentId: string): ExperimentAuditRow[];
     setExperimentReport(experimentId: string, reportPath: string, reportHash: string): Pl3ExperimentStorageRecord;
     recordOnlinePredictionRun(input: {
         runId: string;
@@ -392,3 +438,4 @@ export declare const restorePl3Database: (dataDir: string, backupPath: string) =
     replacedPath: string | null;
     safetyBackupPath: string | null;
 }>;
+export {};

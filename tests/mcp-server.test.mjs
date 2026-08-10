@@ -16,10 +16,22 @@ test('mcp server exposes the five P3 tools through the public tool catalog', asy
   const { createLotteryToolCatalog } = await import(serverEntryUrl)
 
   const catalog = createLotteryToolCatalog({
-    getLatest: async () => ({ data: null, meta: { plan: 'member', apiKeyUsed: true, requestLimit: null, generatedAt: new Date().toISOString() } }),
-    getHistory: async () => ({ data: [], meta: { plan: 'member', apiKeyUsed: true, requestLimit: 20, generatedAt: new Date().toISOString() } }),
-    getPeriods: async () => ({ data: [], meta: { plan: 'member', apiKeyUsed: true, requestLimit: 20, generatedAt: new Date().toISOString() } }),
-    getSummary: async () => ({ data: null, meta: { plan: 'member', apiKeyUsed: true, requestLimit: null, generatedAt: new Date().toISOString() } }),
+    getLatest: async () => ({
+      data: null,
+      meta: { plan: 'member', apiKeyUsed: true, requestLimit: null, generatedAt: new Date().toISOString() },
+    }),
+    getHistory: async () => ({
+      data: [],
+      meta: { plan: 'member', apiKeyUsed: true, requestLimit: 20, generatedAt: new Date().toISOString() },
+    }),
+    getPeriods: async () => ({
+      data: [],
+      meta: { plan: 'member', apiKeyUsed: true, requestLimit: 20, generatedAt: new Date().toISOString() },
+    }),
+    getSummary: async () => ({
+      data: null,
+      meta: { plan: 'member', apiKeyUsed: true, requestLimit: null, generatedAt: new Date().toISOString() },
+    }),
   })
 
   assert.deepEqual(
@@ -53,18 +65,27 @@ test('predict tool defaults to pl3 and rejects other lottery types', async () =>
   const records = Array.from({ length: 100 }, (_, index) => ({
     lotteryType: 'pl3',
     period: String(26001 + index),
-    drawDate: `2026-01-${String(index % 28 + 1).padStart(2, '0')}`,
+    drawDate: `2026-01-${String((index % 28) + 1).padStart(2, '0')}`,
     numbers: `${index % 10},${(index + 1) % 10},${(index + 2) % 10}`,
   })).reverse()
-  const catalog = createLotteryToolCatalog({
-    getLatest: async () => ({ data: null, meta: {} }),
-    getHistory: async () => ({
-      data: records,
-      meta: { plan: 'public', provider: 'official', requestLimit: null, generatedAt: new Date().toISOString(), hasMore: false },
-    }),
-    getPeriods: async () => ({ data: [], meta: {} }),
-    getSummary: async () => ({ data: null, meta: {} }),
-  }, { dataDir: path.join(repoRoot, '.tmp-tests', 'mcp-predict') })
+  const catalog = createLotteryToolCatalog(
+    {
+      getLatest: async () => ({ data: null, meta: {} }),
+      getHistory: async () => ({
+        data: records,
+        meta: {
+          plan: 'public',
+          provider: 'official',
+          requestLimit: null,
+          generatedAt: new Date().toISOString(),
+          hasMore: false,
+        },
+      }),
+      getPeriods: async () => ({ data: [], meta: {} }),
+      getSummary: async () => ({ data: null, meta: {} }),
+    },
+    { dataDir: path.join(repoRoot, '.tmp-tests', 'mcp-predict') },
+  )
   const predictTool = catalog.find((item) => item.name === 'lottery.predict')
 
   const success = await predictTool.handler({ tickets: 3 })
@@ -74,6 +95,25 @@ test('predict tool defaults to pl3 and rejects other lottery types', async () =>
   const rejected = await predictTool.handler({ lotteryType: 'fc3d' })
   assert.equal(rejected.isError, true)
   assert.equal(rejected.structuredContent.code, 'LOTTERYMCP_ONLY_PL3_SUPPORTED')
+})
+
+test('predict tool exposes the training-status baseline and validates its values', async () => {
+  const { createLotteryToolCatalog } = await import(serverEntryUrl)
+  const catalog = createLotteryToolCatalog(
+    {
+      getLatest: async () => ({ data: null, meta: {} }),
+      getHistory: async () => ({ data: [], meta: {} }),
+      getPeriods: async () => ({ data: [], meta: {} }),
+      getSummary: async () => ({ data: null, meta: {} }),
+    },
+    { dataDir: path.join(repoRoot, '.tmp-tests', 'mcp-predict-status') },
+  )
+  const predictTool = catalog.find((item) => item.name === 'lottery.predict')
+  const schema = predictTool.inputSchema.trainingStatus
+  assert.equal(schema.safeParse('confirmed').success, true)
+  assert.equal(schema.safeParse('mixed').success, true)
+  assert.equal(schema.safeParse('invalid').success, false)
+  assert.equal(schema.safeParse(undefined).success, true)
 })
 
 test('latest tool delegates to the client and returns text content', async () => {
@@ -97,9 +137,18 @@ test('latest tool delegates to the client and returns text content', async () =>
         },
       }
     },
-    getHistory: async () => ({ data: [], meta: { plan: 'member', apiKeyUsed: true, requestLimit: 20, generatedAt: new Date().toISOString() } }),
-    getPeriods: async () => ({ data: [], meta: { plan: 'member', apiKeyUsed: true, requestLimit: 20, generatedAt: new Date().toISOString() } }),
-    getSummary: async () => ({ data: null, meta: { plan: 'member', apiKeyUsed: true, requestLimit: null, generatedAt: new Date().toISOString() } }),
+    getHistory: async () => ({
+      data: [],
+      meta: { plan: 'member', apiKeyUsed: true, requestLimit: 20, generatedAt: new Date().toISOString() },
+    }),
+    getPeriods: async () => ({
+      data: [],
+      meta: { plan: 'member', apiKeyUsed: true, requestLimit: 20, generatedAt: new Date().toISOString() },
+    }),
+    getSummary: async () => ({
+      data: null,
+      meta: { plan: 'member', apiKeyUsed: true, requestLimit: null, generatedAt: new Date().toISOString() },
+    }),
   })
 
   const latestTool = catalog.find((item) => item.name === 'lottery.latest')

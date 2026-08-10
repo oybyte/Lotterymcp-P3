@@ -26,7 +26,7 @@ const walkFiles = async (root, current = root) => {
         if (entry.isSymbolicLink())
             throw new Error(`raw 目录包含符号链接，拒绝 GC: ${fullPath}`);
         if (entry.isDirectory())
-            files.push(...await walkFiles(root, fullPath));
+            files.push(...(await walkFiles(root, fullPath)));
         else if (entry.isFile())
             files.push(normalizeRelative(path.relative(root, fullPath)));
     }
@@ -97,7 +97,9 @@ export const createPl3RawGcPlan = async (dataDir) => {
     const candidates = [];
     const cutoff = Date.now() - GC_MIN_AGE_MS;
     for (const relativeToRaw of await walkFiles(rawDir)) {
-        if (relativeToRaw === 'gc-plan.json' || relativeToRaw.startsWith('checkpoints/') || relativeToRaw.startsWith('manifests/'))
+        if (relativeToRaw === 'gc-plan.json' ||
+            relativeToRaw.startsWith('checkpoints/') ||
+            relativeToRaw.startsWith('manifests/'))
             continue;
         const relativePath = normalizeRelative(path.join('raw', relativeToRaw));
         if (references.has(relativePath))

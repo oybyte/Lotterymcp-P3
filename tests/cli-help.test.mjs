@@ -147,9 +147,7 @@ test('cli init configures official mode without a token', async () => {
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-official-config-'))
   const configPath = path.join(tempDir, 'cp.config.json')
   const dataDir = path.join(tempDir, 'data')
-  const result = await runCli([
-    'init', '--mode', 'official', '--data-dir', dataDir, '--periods', '200',
-  ], {
+  const result = await runCli(['init', '--mode', 'official', '--data-dir', dataDir, '--periods', '200'], {
     env: {
       NBCP_CONFIG_PATH: configPath,
       NEUXSBOT_TOKEN: 'environment-token-must-not-be-saved',
@@ -169,10 +167,20 @@ test('cli init configures official mode without a token', async () => {
 test('cli init supports named remote options', async () => {
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-remote-config-'))
   const configPath = path.join(tempDir, 'cp.config.json')
-  const result = await runCli([
-    'init', '--mode', 'remote', '--api-base-url', 'https://api.example.com',
-    '--token', 'named-token', '--periods', '188',
-  ], { env: { NBCP_CONFIG_PATH: configPath } })
+  const result = await runCli(
+    [
+      'init',
+      '--mode',
+      'remote',
+      '--api-base-url',
+      'https://api.example.com',
+      '--token',
+      'named-token',
+      '--periods',
+      '188',
+    ],
+    { env: { NBCP_CONFIG_PATH: configPath } },
+  )
 
   assert.equal(result.status, 0)
   const saved = JSON.parse(readFileSync(configPath, 'utf8'))
@@ -184,13 +192,15 @@ test('cli init supports named remote options', async () => {
 
 test('official MCP snippet does not include remote credentials', async () => {
   const { renderMcpConfigSnippet } = await import(configEntryUrl)
-  const snippet = JSON.parse(renderMcpConfigSnippet({
-    apiBaseUrl: 'https://api.example.com',
-    token: 'must-not-leak',
-    defaultPeriods: '200',
-    dataMode: 'official',
-    dataDir: '.lotterymcp-data',
-  }))
+  const snippet = JSON.parse(
+    renderMcpConfigSnippet({
+      apiBaseUrl: 'https://api.example.com',
+      token: 'must-not-leak',
+      defaultPeriods: '200',
+      dataMode: 'official',
+      dataDir: '.lotterymcp-data',
+    }),
+  )
   const env = snippet.mcpServers.lotterymcp.env
   assert.equal(env.LOTTERYMCP_DATA_MODE, 'official')
   assert.equal(env.LOTTERYMCP_DATA_DIR, '.lotterymcp-data')
@@ -210,19 +220,29 @@ test('cli subcommands expose focused help without hidden aliases', async () => {
 
 test('cli data migration performs explicit dry-run and side-by-side apply', async () => {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-cli-migrate-'))
-  writeFileSync(path.join(dataDir, 'pl3.json'), JSON.stringify({
-    records: [{
-      lotteryType: 'pl3',
-      period: '26180',
-      drawDate: '2026-07-01',
-      numbers: '1,2,3',
-      numbersList: [1, 2, 3],
-    }],
-  }), 'utf8')
-  writeFileSync(path.join(dataDir, 'pl3-predictions.json'), JSON.stringify({
-    version: 1,
-    predictions: [{ predictionId: 'cli-legacy-prediction' }],
-  }), 'utf8')
+  writeFileSync(
+    path.join(dataDir, 'pl3.json'),
+    JSON.stringify({
+      records: [
+        {
+          lotteryType: 'pl3',
+          period: '26180',
+          drawDate: '2026-07-01',
+          numbers: '1,2,3',
+          numbersList: [1, 2, 3],
+        },
+      ],
+    }),
+    'utf8',
+  )
+  writeFileSync(
+    path.join(dataDir, 'pl3-predictions.json'),
+    JSON.stringify({
+      version: 1,
+      predictions: [{ predictionId: 'cli-legacy-prediction' }],
+    }),
+    'utf8',
+  )
   const env = { LOTTERYMCP_DATA_DIR: dataDir }
 
   const before = await runCli(['data', 'status'], { env })
@@ -433,12 +453,12 @@ test('cli sync keeps --all as a hidden pl3 compatibility flag', async () => {
       JSON.stringify({
         value: {
           list: [
-          {
-            lotteryDrawNum: '2026001',
-            lotteryDrawTime: '2026-01-01',
-            lotteryDrawResult: '1 2 3',
-          },
-        ],
+            {
+              lotteryDrawNum: '2026001',
+              lotteryDrawTime: '2026-01-01',
+              lotteryDrawResult: '1 2 3',
+            },
+          ],
         },
       }),
     )
@@ -468,12 +488,12 @@ test('cli doctor supports official mode without a token when cache exists', asyn
       JSON.stringify({
         value: {
           list: [
-          {
-            lotteryDrawNum: '2026001',
-            lotteryDrawTime: '2026-01-01',
-            lotteryDrawResult: '1 2 3',
-          },
-        ],
+            {
+              lotteryDrawNum: '2026001',
+              lotteryDrawTime: '2026-01-01',
+              lotteryDrawResult: '1 2 3',
+            },
+          ],
         },
       }),
     )
@@ -512,7 +532,7 @@ test('cli predict and analyze alias use the same TypeScript pl3 engine in offici
   const records = Array.from({ length: 100 }, (_, index) => ({
     lotteryType: 'pl3',
     period: String(26001 + index),
-    drawDate: `2026-01-${String(index % 28 + 1).padStart(2, '0')}`,
+    drawDate: `2026-01-${String((index % 28) + 1).padStart(2, '0')}`,
     numbers: `${index % 10},${(index + 3) % 10},${(index + 6) % 10}`,
   })).reverse()
   const cachePath = path.join(tempDir, 'pl3.json')
@@ -545,7 +565,7 @@ test('cli ops run-once generates a local daily report from SQLite data', async (
   const records = Array.from({ length: 100 }, (_, index) => ({
     lotteryType: 'pl3',
     period: String(27001 + index),
-    drawDate: `2026-02-${String(index % 28 + 1).padStart(2, '0')}`,
+    drawDate: `2026-02-${String((index % 28) + 1).padStart(2, '0')}`,
     numbers: `${index % 10},${(index + 4) % 10},${(index + 8) % 10}`,
   }))
   const store = core.openPl3Store({ dataDir: tempDir })
@@ -553,16 +573,17 @@ test('cli ops run-once generates a local daily report from SQLite data', async (
   store.close()
   await core.applyPl3SchemaMigration(tempDir)
 
-  const result = await runCli([
-    'ops', 'run-once', '--no-sync', '--no-notify', '--periods', '100', '--tickets', '3', '--json',
-  ], {
-    env: {
-      LOTTERYMCP_DATA_MODE: 'official',
-      LOTTERYMCP_DATA_DIR: tempDir,
-      NEUXSBOT_API_BASE_URL: '',
-      NEUXSBOT_TOKEN: '',
+  const result = await runCli(
+    ['ops', 'run-once', '--no-sync', '--no-notify', '--periods', '100', '--tickets', '3', '--json'],
+    {
+      env: {
+        LOTTERYMCP_DATA_MODE: 'official',
+        LOTTERYMCP_DATA_DIR: tempDir,
+        NEUXSBOT_API_BASE_URL: '',
+        NEUXSBOT_TOKEN: '',
+      },
     },
-  })
+  )
 
   assert.equal(result.status, 0)
   const payload = JSON.parse(result.stdout)
@@ -581,7 +602,7 @@ test('ops report server serves SPA assets and read-only overview API', async () 
   const records = Array.from({ length: 100 }, (_, index) => ({
     lotteryType: 'pl3',
     period: String(28001 + index),
-    drawDate: `2026-03-${String(index % 28 + 1).padStart(2, '0')}`,
+    drawDate: `2026-03-${String((index % 28) + 1).padStart(2, '0')}`,
     numbers: `${index % 10},${(index + 2) % 10},${(index + 5) % 10}`,
   }))
   const store = core.openPl3Store({ dataDir: tempDir })
@@ -609,8 +630,17 @@ test('ops report server serves SPA assets and read-only overview API', async () 
     assert.equal(overview.data.latestPrediction.predictionId, run.prediction.predictionId)
     const reports = await fetch(`http://127.0.0.1:${port}/api/v1/reports?limit=5`).then((response) => response.json())
     assert.equal(reports.data.reports[0].runId, run.runId)
-    const detail = await fetch(`http://127.0.0.1:${port}/api/v1/reports/${encodeURIComponent(run.runId)}`).then((response) => response.json())
+    const detail = await fetch(`http://127.0.0.1:${port}/api/v1/reports/${encodeURIComponent(run.runId)}`).then(
+      (response) => response.json(),
+    )
     assert.match(detail.data.markdown, /Run ID:/)
+    const snapshots = await fetch(`http://127.0.0.1:${port}/api/v1/snapshots`).then((response) => response.json())
+    assert.ok(Array.isArray(snapshots.data.snapshots))
+    assert.equal(snapshots.data.snapshots.length, 0)
+    const overviewWithSla = await fetch(`http://127.0.0.1:${port}/api/v1/overview`).then((response) => response.json())
+    assert.ok(overviewWithSla.data.data.slaEvidence)
+    assert.equal(overviewWithSla.data.data.slaEvidence.total, 1)
+    assert.ok(overviewWithSla.data.data.slaEvidence.verifiedBeforeObservation >= 0)
   } finally {
     await new Promise((resolve, reject) => served.server.close((error) => (error ? reject(error) : resolve())))
   }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -35,6 +35,52 @@ test('SQLite truth reconciliation only treats two independent official providers
     assert.equal(store.getStatus().confirmedRecords, 1)
     assert.equal(store.getStatus().dualSourceCoverage, 1)
     assert.equal(store.getRecords({ limit: 10 })[0].status, 'confirmed')
+  } finally {
+    store.close()
+  }
+})
+
+test('getConfidenceByYear groups confirmed and single-source draws per year', async () => {
+  const { openPl3Store } = await import(coreEntryUrl)
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-store-by-year-'))
+  const store = openPl3Store({ dataDir })
+  try {
+    store.importRecords(
+      [
+        record('26001', [1, 2, 3]),
+        record('26002', [4, 5, 6]),
+        record('26003', [7, 8, 9]),
+        record('25001', [1, 1, 1]),
+        record('25002', [2, 2, 2]),
+      ],
+      { provider: 'lottery-gov-cn' },
+    )
+    store.importRecords(
+      [record('26001', [1, 2, 3]), record('26002', [4, 5, 6]), record('26003', [7, 8, 9]), record('25001', [1, 1, 1])],
+      { provider: 'zhcw' },
+    )
+
+    const byYear = store.getConfidenceByYear()
+    assert.deepEqual(
+      byYear.map((row) => row.year),
+      ['25', '26'],
+    )
+    assert.deepEqual(byYear[0], {
+      year: '25',
+      totalPeriods: 2,
+      confirmedRecords: 1,
+      singleSourceRecords: 1,
+      conflictRecords: 0,
+      dualSourceCoverage: 0.5,
+    })
+    assert.deepEqual(byYear[1], {
+      year: '26',
+      totalPeriods: 3,
+      confirmedRecords: 3,
+      singleSourceRecords: 0,
+      conflictRecords: 0,
+      dualSourceCoverage: 1,
+    })
   } finally {
     store.close()
   }
@@ -82,17 +128,18 @@ test('legacy migration validates side-by-side, preserves JSON and prediction ids
     resolvePl3DatabasePath,
   } = await import(coreEntryUrl)
   const dataDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-store-migration-'))
-  const records = [
-    record('26179', [0, 1, 2], '2026-06-30'),
-    record('26180', [1, 2, 3], '2026-07-01'),
-  ]
+  const records = [record('26179', [0, 1, 2], '2026-06-30'), record('26180', [1, 2, 3], '2026-07-01')]
   const historyPath = path.join(dataDir, 'pl3.json')
   const ledgerPath = path.join(dataDir, 'pl3-predictions.json')
   writeFileSync(historyPath, JSON.stringify({ records }), 'utf8')
-  writeFileSync(ledgerPath, JSON.stringify({
-    version: 1,
-    predictions: [{ predictionId: 'legacy-prediction-001' }],
-  }), 'utf8')
+  writeFileSync(
+    ledgerPath,
+    JSON.stringify({
+      version: 1,
+      predictions: [{ predictionId: 'legacy-prediction-001' }],
+    }),
+    'utf8',
+  )
 
   const preview = await previewLegacyPl3Migration(dataDir)
   assert.equal(preview.databaseExists, false)
@@ -205,20 +252,133 @@ test('conflicts support date/number classification and resolution requires an HT
     store.importRecords([record('26179', [1, 2, 3], '2026-07-02')], { provider: 'zhcw' })
     store.importRecords([record('26180', [1, 2, 3], '2026-07-03')], { provider: 'lottery-gov-cn' })
     store.importRecords([record('26180', [3, 2, 1], '2026-07-03')], { provider: 'zhcw' })
-    assert.deepEqual(store.getConflicts({ type: 'date' }).map((item) => item.period), ['26179'])
-    assert.deepEqual(store.getConflicts({ type: 'numbers' }).map((item) => item.period), ['26180'])
+    assert.deepEqual(
+      store.getConflicts({ type: 'date' }).map((item) => item.period),
+      ['26179'],
+    )
+    assert.deepEqual(
+      store.getConflicts({ type: 'numbers' }).map((item) => item.period),
+      ['26180'],
+    )
     assert.equal(store.getConflicts({ fromPeriod: '26180' }).length, 1)
     const observationId = store.getConflicts({ type: 'numbers' })[0].observations[0].observationId
+    assert.throws(() => store.resolveConflict({ period: '26180', observationId, reason: 'test' }), /证据 URL/)
     assert.throws(
-      () => store.resolveConflict({ period: '26180', observationId, reason: 'test' }),
-      /证据 URL/,
-    )
-    assert.throws(
-      () => store.resolveConflict({
-        period: '26180', observationId, reason: 'test', evidenceUrl: 'file:///tmp/evidence',
-      }),
+      () =>
+        store.resolveConflict({
+          period: '26180',
+          observationId,
+          reason: 'test',
+          evidenceUrl: 'file:///tmp/evidence',
+        }),
       /http\/https/,
     )
+  } finally {
+    store.close()
+  }
+})
+
+test('reconcileHistory re-derives stale single_source draws when the second official source observation already exists', async () => {
+  const { openPl3Store } = await import(coreEntryUrl)
+  const Database = (await import('better-sqlite3')).default
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-reconcile-history-'))
+  const store = openPl3Store({ dataDir })
+  try {
+    store.importRecords([record('26179', [1, 2, 3], '2026-07-02')], { provider: 'lottery-gov-cn' })
+    store.importRecords([record('26180', [4, 5, 6], '2026-07-03')], { provider: 'lottery-gov-cn' })
+    assert.equal(store.getStatus().confirmedRecords, 0)
+    assert.equal(store.getStatus().singleSourceRecords, 2)
+
+    const first = store.reconcileHistory()
+    assert.deepEqual(first, {
+      scannedPeriods: 2,
+      upgradedToConfirmed: 0,
+      remainingSingleSource: 2,
+      remainingConflicts: 0,
+    })
+
+    const raw = new Database(path.join(dataDir, 'pl3.sqlite'))
+    try {
+      raw
+        .prepare(
+          `
+        INSERT INTO draw_observations(period, period_num, draw_date, d1, d2, d3, numbers, provider, first_observed_at, last_observed_at, observation_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      `,
+        )
+        .run(
+          '26179',
+          26179,
+          '2026-07-02',
+          1,
+          2,
+          3,
+          '1,2,3',
+          'zhcw',
+          '2026-07-03T00:00:00.000Z',
+          '2026-07-03T00:00:00.000Z',
+        )
+    } finally {
+      raw.close()
+    }
+    assert.equal(store.getStatus().confirmedRecords, 0)
+
+    const second = store.reconcileHistory()
+    assert.equal(second.upgradedToConfirmed, 1)
+    assert.equal(second.remainingSingleSource, 1)
+    assert.equal(store.getStatus().confirmedRecords, 1)
+    assert.equal(store.getStatus().singleSourceRecords, 1)
+    assert.equal(store.getRecords({ limit: 10 }).find((item) => item.period === '26179')?.status, 'confirmed')
+  } finally {
+    store.close()
+  }
+})
+
+test('SLA evidence verifies a prediction is generated before the target draw is first observed', async () => {
+  const { openPl3Store, verifyPl3PredictionSla, writeJsonAtomically } = await import(coreEntryUrl)
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-sla-'))
+  const store = openPl3Store({ dataDir })
+  const ledgerPath = path.join(dataDir, 'pl3-predictions.json')
+  try {
+    store.importRecords([record('26185', [1, 2, 3], '2026-07-08')], { provider: 'lottery-gov-cn' })
+    store.importRecords([record('26185', [1, 2, 3], '2026-07-08')], { provider: 'zhcw' })
+
+    const ledger = {
+      version: 1,
+      predictions: [
+        {
+          predictionId: 'pred-before',
+          afterPeriod: '26184',
+          generatedAt: '2026-07-01T00:00:00.000Z',
+          settlement: { status: 'confirmed' },
+        },
+        {
+          predictionId: 'pred-unknown-target',
+          afterPeriod: '26199',
+          generatedAt: '2026-07-01T00:00:00.000Z',
+          settlement: { status: 'confirmed' },
+        },
+      ],
+    }
+    await writeJsonAtomically(ledgerPath, ledger)
+
+    const summary = await verifyPl3PredictionSla(ledgerPath, (prediction) => store.getPredictionSlaEvidence(prediction))
+
+    assert.equal(summary.total, 2)
+    assert.equal(summary.withEvidence, 1)
+    assert.equal(summary.verifiedBeforeObservation, 1)
+    assert.equal(summary.violated, 0)
+    assert.equal(summary.pendingEvidence, 1)
+
+    const item = summary.items.find((entry) => entry.predictionId === 'pred-before')
+    assert.ok(item)
+    assert.equal(item.targetPeriod, '26185')
+    assert.ok(item.firstObservedAt)
+    assert.equal(item.predictedBeforeFirstObservation, true)
+
+    const target = store.getPredictionSlaEvidence({ afterPeriod: '26300', generatedAt: '2027-01-01T00:00:00.000Z' })
+    assert.equal(target.targetPeriod, null)
+    assert.equal(target.predictedBeforeFirstObservation, null)
   } finally {
     store.close()
   }

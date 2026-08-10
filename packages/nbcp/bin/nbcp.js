@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 

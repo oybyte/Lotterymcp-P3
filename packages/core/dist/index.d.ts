@@ -117,7 +117,6 @@ export type Pl3PredictionService = {
         provisional: number;
         confirmed: number;
         disputed: number;
-        settled: number;
     }>;
 };
 export type Pl3DrawRecord = Pl3Record & {

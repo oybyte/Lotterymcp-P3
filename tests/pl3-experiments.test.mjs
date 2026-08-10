@@ -48,11 +48,13 @@ test('experiment specs normalize search spaces and reject ROI as a primary metri
   const core = await import(coreEntryUrl)
   const normalized = core.normalizePl3ExperimentSpec({
     ...specFor('snapshot-fixture'),
-    models: [{
-      modelId: 'weighted-frequency-v1',
-      params: { historyWindow: 200 },
-      searchSpace: { historyWindow: [500, 100, 200, 100] },
-    }],
+    models: [
+      {
+        modelId: 'weighted-frequency-v1',
+        params: { historyWindow: 200 },
+        searchSpace: { historyWindow: [500, 100, 200, 100] },
+      },
+    ],
   })
   assert.deepEqual(normalized.models[0].searchSpace.historyWindow, [100, 200, 500])
   assert.throws(
@@ -85,7 +87,10 @@ test('experiment IDs are stable and frozen results stay hidden until one-time ev
     assert.equal(frozenFolds.length, 20)
     const firstFold = JSON.parse(readFileSync(path.join(dataDir, frozenFolds[0].resultPath), 'utf8'))
     assert.equal(firstFold.bootstrap['random-monte-carlo'].samples, 10000)
-    assert.equal(firstFold.cases.every((item) => item.afterPeriod < item.targetPeriod), true)
+    assert.equal(
+      firstFold.cases.every((item) => item.afterPeriod < item.targetPeriod),
+      true,
+    )
 
     const regenerated = await core.generatePl3ExperimentReport(store, first.experiment.experimentId)
     assert.equal(regenerated.reportHash, frozen.reportHash)
@@ -101,10 +106,14 @@ test('experiment IDs are stable and frozen results stay hidden until one-time ev
 test('interrupted experiments resume after the last complete fold and retain nested selections', async () => {
   const { core, dataset, store } = await createExperimentStore(2100)
   try {
-    const created = core.createPl3Experiment(store, specFor(dataset.snapshotId, {
-      mode: 'development',
-      models: ['uniform-theory'],
-    }), 'resume-fixture')
+    const created = core.createPl3Experiment(
+      store,
+      specFor(dataset.snapshotId, {
+        mode: 'development',
+        models: ['uniform-theory'],
+      }),
+      'resume-fixture',
+    )
     const originalSave = store.saveExperimentFold.bind(store)
     let interrupted = false
     store.saveExperimentFold = (fold) => {
@@ -114,14 +123,13 @@ test('interrupted experiments resume after the last complete fold and retain nes
         throw new Error('fixture interruption after fold 0')
       }
     }
-    await assert.rejects(
-      () => core.runPl3Experiment(store, created.experiment.experimentId),
-      /fixture interruption/,
-    )
+    await assert.rejects(() => core.runPl3Experiment(store, created.experiment.experimentId), /fixture interruption/)
     assert.equal(store.getExperiment(created.experiment.experimentId).status, 'interrupted')
     assert.deepEqual(
-      store.listExperimentFolds(created.experiment.experimentId, 'outer')
-        .filter((fold) => fold.status === 'complete').map((fold) => fold.foldIndex),
+      store
+        .listExperimentFolds(created.experiment.experimentId, 'outer')
+        .filter((fold) => fold.status === 'complete')
+        .map((fold) => fold.foldIndex),
       [0],
     )
 

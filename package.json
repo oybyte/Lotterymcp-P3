@@ -22,12 +22,19 @@
   "scripts": {
     "build": "npm run build --workspace lotterymcp-web && tsc -b packages/core packages/mcp-server packages/cli && node scripts/copy-web-assets.mjs",
     "dev": "npm run build && node packages/cli/dist/index.js --help",
-    "test": "npm run build && node --test tests/banner-render.test.mjs tests/cli-help.test.mjs tests/core-client.test.mjs tests/data-files.test.mjs tests/mcp-server.test.mjs tests/official-sync.test.mjs tests/pl3-experiments.test.mjs tests/pl3-features.test.mjs tests/pl3-prediction.test.mjs tests/pl3-store.test.mjs tests/publish-package.test.mjs",
+    "test": "npm run build && node --test tests/banner-render.test.mjs tests/cli-help.test.mjs tests/core-client.test.mjs tests/data-files.test.mjs tests/mcp-server.test.mjs tests/official-sync.test.mjs tests/pl3-experiments.test.mjs tests/pl3-features.test.mjs tests/pl3-prediction.test.mjs tests/pl3-store.test.mjs tests/publish-package.test.mjs && npm run test --workspace lotterymcp-web",
+    "reproduce": "npm run build && node scripts/reproduction-smoke.mjs",
+    "lint": "eslint packages scripts tests",
+    "format:check": "prettier --check packages scripts tests",
     "docs:screenshots": "npm run build && node scripts/generate-doc-screenshots.mjs",
     "docs:screenshots:check": "npm run build && node scripts/generate-doc-screenshots.mjs --check"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^24.0.0",
-    "typescript": "^5.7.3"
+    "eslint": "^10.8.0",
+    "prettier": "^3.9.6",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.66.0"
   }
 }

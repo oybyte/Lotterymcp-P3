@@ -35,6 +35,8 @@ services:
       - |
         while true; do
           node packages/cli/dist/index.js ops run-once --migrate || true
+          node packages/cli/dist/index.js data backup || true
+          node packages/cli/dist/index.js data gc --apply || true
           sleep "$${LOTTERYMCP_DAILY_INTERVAL_SECONDS:-86400}"
         done
 

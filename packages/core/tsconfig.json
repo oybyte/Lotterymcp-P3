@@ -10,11 +10,7 @@
     "composite": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "lib": [
-      "ES2022"
-    ]
+    "lib": ["ES2022"]
   },
-  "include": [
-    "src/**/*.ts"
-  ]
+  "include": ["src/**/*.ts"]
 }

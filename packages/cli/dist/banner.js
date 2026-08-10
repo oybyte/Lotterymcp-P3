@@ -27,16 +27,6 @@ export const shouldShowBanner = (command, stream = process.stdout) => {
 };
 export const renderNbcpBanner = (_stream = process.stdout) => {
     const maxWidth = Math.max(...WORDMARK_LINES.map((line) => line.length), SUBTITLE_LINE.length, WEBSITE_LINE.length);
-    const renderedLines = WORDMARK_LINES.flatMap((line) => [
-        ` ${shadowify(line)}`,
-        line,
-    ]);
-    return [
-        '',
-        ...renderedLines,
-        '',
-        centerText(SUBTITLE_LINE, maxWidth),
-        centerText(WEBSITE_LINE, maxWidth),
-        '',
-    ].join('\n');
+    const renderedLines = WORDMARK_LINES.flatMap((line) => [` ${shadowify(line)}`, line]);
+    return ['', ...renderedLines, '', centerText(SUBTITLE_LINE, maxWidth), centerText(WEBSITE_LINE, maxWidth), ''].join('\n');
 };

@@ -55,10 +55,13 @@ remote 模式使用用户自己的 NEUXSBOT Token 读取排列3数据。
 lotterymcp init --mode official --data-dir .lotterymcp-data --periods 200
 lotterymcp data sync --full
 lotterymcp data status
+lotterymcp data sla
 lotterymcp doctor
 lotterymcp predict --periods 200 --tickets 10 --play mixed
 lotterymcp serve
 ```
+
+`data sla` 输出每条预测的生成时刻与目标期首次本地 observation 的时间证据（仅证明早于本地首次观测，不构成第三方开奖前时间戳证明）。
 
 official 模式不要求 Token，只读取公开同步或用户导入的本地排列3数据。
 
@@ -257,6 +260,8 @@ lotterymcp data bundle restore --bundle transfer-bundle
 
 `lotteryType` 可以省略，默认使用 `pl3`；其他彩种会返回 `LOTTERYMCP_ONLY_PL3_SUPPORTED`。
 
+`lottery.predict` 的可选参数 `trainingStatus`（`confirmed` 或 `mixed`）控制训练窗口的数据状态基线：`confirmed` 只在双官方源确认的记录上训练，`mixed` 允许单来源记录（默认）。训练窗口的数据状态摘要随预测结果返回（`training.dataStatus`），CLI 可加 `--training-status confirmed` 覆盖。
+
 ## 终端效果
 
 <table>
@@ -281,13 +286,46 @@ lotterymcp data bundle restore --bundle transfer-bundle
 - 默认单注成本为 2 元，名义奖金为直选 1040、组三 346、组六 173；可分别通过 `LOTTERYMCP_PL3_STAKE`、`LOTTERYMCP_PL3_PAYOUT_DIRECT`、`LOTTERYMCP_PL3_PAYOUT_GROUP3`、`LOTTERYMCP_PL3_PAYOUT_GROUP6` 覆盖。
 - 奖金、回报和 ROI 都是按配置计算的历史模拟，不构成收益承诺。
 
+## 实现状态
+
+| 模块 | 能力 | 状态 |
+| --- | --- | --- |
+| 数据接入 | remote MCP 接口读取 | 已实现 |
+| | 官方公开源全量同步（断点续传、raw 证据、checkpoint） | 已实现 |
+| | JSON/CSV 文件导入 | 已实现 |
+| 数据可信度 | SQLite 档案 + 来源观测 + 冲突隔离 | 已实现 |
+| | 双官方源一致才 `confirmed`，其余 `single_source` | 已实现 |
+| | 不可变 dataset snapshot + 哈希校验 | 已实现 |
+| | `--reconcile` 历史回补核对 | 已实现 |
+| | 预测结果附带数据状态标注 | 已实现 |
+| | 分年度 `confirmed/single_source` 可信度报告 | 已实现 |
+| | SLA 时间证据（预测早于目标期首次本地 observation） | 已实现 |
+| 预测 | 固定可解释频率权重 + mixed/direct/group3/group6 | 已实现 |
+| | 每注排序分构成解释（主导特征标注） | 已实现 |
+| | walk-forward 回测（成本/回报/ROI） | 已实现 |
+| | 预测账本 `pending/provisional/confirmed/disputed` 复盘 | 已实现 |
+| | 数据状态驱动训练窗口（confirmed-only 基线对比） | 已实现 |
+| 研究实验 | 不可变 As-of 特征快照 | 已实现 |
+| | nested walk-forward 实验（内层选参/外层晋级/冻结区） | 已实现 |
+| | 一致实验 ID 与报告哈希 | 已实现 |
+| | Web 展示实验注册/折叠/审计与数据集快照验证 | 已实现 |
+| 基线 | `uniform-theory` / `random-monte-carlo` / `weighted-frequency-v1` | 已实现 |
+| 运维 | 显式 schema 迁移、备份/恢复、GC、bundle 迁移 | 已实现 |
+| | 线上预测运行、运维事件、通知投递记录（M003） | 已实现 |
+| | Web 研究台 + 企业微信通知 + Web 认证 | 已实现 |
+| 工程质量 | ESLint + Prettier + 全部测试通过 | 已实现 |
+| 基线范围 | 真实双源完整邻域回补（全年段确认度提升） | 计划中 |
+
 ## 开发验证
 
 ```bash
 npm ci
 npm test
+npm run reproduce
 npm run docs:screenshots:check
 npm audit --omit=dev
 ```
+
+`npm run reproduce` 在临时目录重放完整链路（数据档案 → 预测 → SLA 时间证据 → 数据集快照校验），验证一键复现。
 
 项目使用 [MIT License](LICENSE)。

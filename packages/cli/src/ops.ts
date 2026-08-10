@@ -6,16 +6,17 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import {
-  PL3_DATABASE_LATEST_SCHEMA_VERSION,
   applyPl3SchemaMigration,
   backupPl3Database,
   createLotteryMcpClient,
   createPl3PredictionService,
   hasPl3Database,
+  inspectPl3Experiment,
   openPl3Store,
   previewPl3SchemaMigration,
   resolvePl3DatabasePath,
   restorePl3Database,
+  verifyPl3PredictionSla,
   writeJsonAtomically,
   type LotteryMcpConfig,
   type Pl3PlayType,
@@ -26,6 +27,15 @@ import { MCP_SERVER_TOOLS } from 'lotterymcp-server'
 import { syncOfficialPl3ToStore, type SyncOfficialPl3StoreResult } from './official-sync.js'
 
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex')
+
+const formatDataStatus = (prediction: Pl3PredictionResult) => {
+  const dataStatus = prediction.training.dataStatus
+  if (dataStatus.dualSourceCoverage === null) return 'no source status annotated'
+  const parts = [`confirmed ${dataStatus.confirmedRecords}`, `single-source ${dataStatus.singleSourceRecords}`]
+  if (dataStatus.conflictRecords > 0) parts.push(`conflict ${dataStatus.conflictRecords}`)
+  parts.push(`dual-source-coverage ${(dataStatus.dualSourceCoverage * 100).toFixed(1)}%`)
+  return parts.join(', ')
+}
 
 const safeRelativePath = (value: string) => {
   const normalized = value.replaceAll('\\', '/').replace(/^\/+/, '')
@@ -95,10 +105,7 @@ export type Pl3DataBundleManifest = {
   }
 }
 
-export const createPl3DataBundle = async (input: {
-  dataDir: string
-  outputDir: string
-}) => {
+export const createPl3DataBundle = async (input: { dataDir: string; outputDir: string }) => {
   const dataDir = path.resolve(input.dataDir)
   if (!hasPl3Database(dataDir)) throw new Error('尚未启用 SQLite，无法创建迁移 bundle。')
   const outputDir = path.resolve(input.outputDir)
@@ -119,13 +126,15 @@ export const createPl3DataBundle = async (input: {
       sha256: await readFileHash(databaseTarget),
       bytes: databaseStat.size,
     },
-    ...(ledgerTarget ? {
-      ledger: {
-        file: 'pl3-predictions.json',
-        sha256: await readFileHash(ledgerTarget),
-        bytes: (await stat(ledgerTarget)).size,
-      },
-    } : {}),
+    ...(ledgerTarget
+      ? {
+          ledger: {
+            file: 'pl3-predictions.json',
+            sha256: await readFileHash(ledgerTarget),
+            bytes: (await stat(ledgerTarget)).size,
+          },
+        }
+      : {}),
   }
   await writeJsonAtomically(path.join(outputDir, 'manifest.json'), manifest)
   return { outputDir, manifest, sourceBackupPath: backup.backupPath }
@@ -146,14 +155,16 @@ export const verifyPl3DataBundle = async (bundleDir: string) => {
     expectedBytes: number
     actualBytes: number
     valid: boolean
-  }> = [{
-    file: manifest.database.file,
-    expectedSha256: manifest.database.sha256,
-    actualSha256: databaseHash,
-    expectedBytes: manifest.database.bytes,
-    actualBytes: databaseStat.size,
-    valid: databaseHash === manifest.database.sha256 && databaseStat.size === manifest.database.bytes,
-  }]
+  }> = [
+    {
+      file: manifest.database.file,
+      expectedSha256: manifest.database.sha256,
+      actualSha256: databaseHash,
+      expectedBytes: manifest.database.bytes,
+      actualBytes: databaseStat.size,
+      valid: databaseHash === manifest.database.sha256 && databaseStat.size === manifest.database.bytes,
+    },
+  ]
   if (manifest.ledger) {
     const ledgerPath = path.join(resolvedBundleDir, safeRelativePath(manifest.ledger.file))
     const ledgerHash = await readFileHash(ledgerPath)
@@ -175,10 +186,7 @@ export const verifyPl3DataBundle = async (bundleDir: string) => {
   }
 }
 
-export const restorePl3DataBundle = async (input: {
-  dataDir: string
-  bundleDir: string
-}) => {
+export const restorePl3DataBundle = async (input: { dataDir: string; bundleDir: string }) => {
   const verification = await verifyPl3DataBundle(input.bundleDir)
   if (!verification.valid) throw new Error('bundle 校验失败，拒绝恢复。')
   const dataDir = path.resolve(input.dataDir)
@@ -202,38 +210,44 @@ const renderMarkdownReport = (input: {
   runId: string
   prediction: Pl3PredictionResult
   sync?: SyncOfficialPl3StoreResult
-}) => [
-  '# Lotterymcp P3 Daily Report',
-  '',
-  `Run ID: ${input.runId}`,
-  `Generated at: ${input.generatedAt}`,
-  `After period: ${input.prediction.afterPeriod}`,
-  `Prediction ID: ${input.prediction.predictionId}`,
-  `Training records: ${input.prediction.training.recordCount}`,
-  `Play/tickets: ${input.prediction.query.playType}/${input.prediction.query.tickets}`,
-  `Settlement: ${input.prediction.settlement.status}`,
-  '',
-  '## Tickets',
-  '',
-  ...input.prediction.tickets.map((ticket) =>
-    `- ${ticket.rank}. ${ticket.playType} ${ticket.display} score=${ticket.score}`),
-  '',
-  '## Backtest',
-  '',
-  input.prediction.backtest.status === 'complete'
-    ? `Cost ${input.prediction.backtest.totalCost}, return ${input.prediction.backtest.totalReturn}, ROI ${input.prediction.backtest.roi}.`
-    : 'Insufficient data for backtest.',
-  input.prediction.payouts.note,
-  '',
-  ...(input.sync ? [
-    '## Sync',
+}) =>
+  [
+    '# Lotterymcp P3 Daily Report',
     '',
-    `Provider: ${input.sync.provider}`,
-    `Records: ${input.sync.records.length}`,
-    `Confirmed/single-source/conflict: ${input.sync.confirmedRecords}/${input.sync.singleSourceRecords}/${input.sync.conflictRecords}`,
-  ] : []),
-  '',
-].join('\n')
+    `Run ID: ${input.runId}`,
+    `Generated at: ${input.generatedAt}`,
+    `After period: ${input.prediction.afterPeriod}`,
+    `Prediction ID: ${input.prediction.predictionId}`,
+    `Training records: ${input.prediction.training.recordCount}`,
+    `Data status: ${formatDataStatus(input.prediction)}`,
+    `Play/tickets: ${input.prediction.query.playType}/${input.prediction.query.tickets}`,
+    `Settlement: ${input.prediction.settlement.status}`,
+    '',
+    '## Tickets',
+    '',
+    ...input.prediction.tickets.map(
+      (ticket) =>
+        `- ${ticket.rank}. ${ticket.playType} ${ticket.display} score=${ticket.score}${ticket.scoreComposition ? ` (leading: ${ticket.scoreComposition.leadingFeature})` : ''}`,
+    ),
+    '',
+    '## Backtest',
+    '',
+    input.prediction.backtest.status === 'complete'
+      ? `Cost ${input.prediction.backtest.totalCost}, return ${input.prediction.backtest.totalReturn}, ROI ${input.prediction.backtest.roi}.`
+      : 'Insufficient data for backtest.',
+    input.prediction.payouts.note,
+    '',
+    ...(input.sync
+      ? [
+          '## Sync',
+          '',
+          `Provider: ${input.sync.provider}`,
+          `Records: ${input.sync.records.length}`,
+          `Confirmed/single-source/conflict: ${input.sync.confirmedRecords}/${input.sync.singleSourceRecords}/${input.sync.conflictRecords}`,
+        ]
+      : []),
+    '',
+  ].join('\n')
 
 export type Pl3DailyReportSummary = {
   runId: string
@@ -263,10 +277,9 @@ const upsertReportIndex = async (dataDir: string, summary: Pl3DailyReportSummary
     updatedAt: summary.generatedAt,
     reports: [],
   })
-  const reports = [
-    summary,
-    ...index.reports.filter((item) => item.runId !== summary.runId),
-  ].sort((left, right) => right.generatedAt.localeCompare(left.generatedAt))
+  const reports = [summary, ...index.reports.filter((item) => item.runId !== summary.runId)].sort((left, right) =>
+    right.generatedAt.localeCompare(left.generatedAt),
+  )
   const nextIndex: Pl3DailyReportIndex = {
     version: 1,
     updatedAt: new Date().toISOString(),
@@ -278,10 +291,7 @@ const upsertReportIndex = async (dataDir: string, summary: Pl3DailyReportSummary
 }
 
 const renderHtmlReport = (markdown: string) => {
-  const escaped = markdown
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
+  const escaped = markdown.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -308,19 +318,26 @@ export const writePl3DailyReport = async (input: {
   const generatedAt = new Date().toISOString()
   const day = toBeijingDay(new Date(generatedAt))
   const reportDir = path.join(reportsRoot(input.dataDir), 'daily', day, input.runId)
-  const markdown = renderMarkdownReport({ generatedAt, runId: input.runId, prediction: input.prediction, sync: input.sync })
+  const markdown = renderMarkdownReport({
+    generatedAt,
+    runId: input.runId,
+    prediction: input.prediction,
+    sync: input.sync,
+  })
   const payload = {
     runId: input.runId,
     generatedAt,
     prediction: input.prediction,
-    sync: input.sync ? {
-      provider: input.sync.provider,
-      records: input.sync.records.length,
-      confirmedRecords: input.sync.confirmedRecords,
-      singleSourceRecords: input.sync.singleSourceRecords,
-      conflictRecords: input.sync.conflictRecords,
-      warnings: input.sync.warnings,
-    } : null,
+    sync: input.sync
+      ? {
+          provider: input.sync.provider,
+          records: input.sync.records.length,
+          confirmedRecords: input.sync.confirmedRecords,
+          singleSourceRecords: input.sync.singleSourceRecords,
+          conflictRecords: input.sync.conflictRecords,
+          warnings: input.sync.warnings,
+        }
+      : null,
   }
   await mkdir(reportDir, { recursive: true })
   await atomicWriteText(path.join(reportDir, 'report.md'), markdown)
@@ -396,7 +413,9 @@ type WebAuthConfig = {
 }
 
 const resolveWebAccessMode = (value: unknown): WebAccessMode =>
-  String(value || process.env.LOTTERYMCP_WEB_ACCESS_MODE || 'tunnel').trim().toLowerCase() === 'public'
+  String(value || process.env.LOTTERYMCP_WEB_ACCESS_MODE || 'tunnel')
+    .trim()
+    .toLowerCase() === 'public'
     ? 'public'
     : 'tunnel'
 
@@ -404,7 +423,10 @@ const resolveWebStateDir = (dataDir: string) =>
   path.resolve(process.env.LOTTERYMCP_WEB_STATE_DIR || path.join(path.dirname(path.resolve(dataDir)), 'web-state'))
 
 const resolveWebSecretPath = (dataDir: string) =>
-  path.resolve(process.env.LOTTERYMCP_WEB_AUTH_CONFIG || path.join(path.dirname(path.resolve(dataDir)), 'secrets', 'web-auth.json'))
+  path.resolve(
+    process.env.LOTTERYMCP_WEB_AUTH_CONFIG ||
+      path.join(path.dirname(path.resolve(dataDir)), 'secrets', 'web-auth.json'),
+  )
 
 const hashPassword = (password: string, salt = randomBytes(16).toString('hex')) => ({
   salt,
@@ -450,10 +472,8 @@ const generateTotp = (secret: string, step = Math.floor(Date.now() / 30000)) => 
   counter.writeBigUInt64BE(BigInt(step))
   const hmac = createHmac('sha1', fromBase32(secret)).update(counter).digest()
   const offset = hmac[hmac.length - 1]! & 0xf
-  const binary = ((hmac[offset]! & 0x7f) << 24)
-    | (hmac[offset + 1]! << 16)
-    | (hmac[offset + 2]! << 8)
-    | hmac[offset + 3]!
+  const binary =
+    ((hmac[offset]! & 0x7f) << 24) | (hmac[offset + 1]! << 16) | (hmac[offset + 2]! << 8) | hmac[offset + 3]!
   return String(binary % 1_000_000).padStart(6, '0')
 }
 
@@ -490,11 +510,7 @@ const createWebAuthDatabase = (webStateDir: string) => {
   return database
 }
 
-export const createWebAuthConfig = async (input: {
-  dataDir: string
-  password: string
-  secretPath?: string
-}) => {
+export const createWebAuthConfig = async (input: { dataDir: string; password: string; secretPath?: string }) => {
   if (input.password.length < 10) throw new Error('Web 访问口令至少需要 10 个字符。')
   const secretPath = path.resolve(input.secretPath || resolveWebSecretPath(input.dataDir))
   const password = hashPassword(input.password)
@@ -511,22 +527,33 @@ export const createWebAuthConfig = async (input: {
   return { secretPath, totpSecret: config.totpSecret, recoveryCodes }
 }
 
-const loadWebAuthConfig = async (dataDir: string) => readJsonIfExists<WebAuthConfig | null>(resolveWebSecretPath(dataDir), null)
+const loadWebAuthConfig = async (dataDir: string) =>
+  readJsonIfExists<WebAuthConfig | null>(resolveWebSecretPath(dataDir), null)
 
 const parseCookies = (header: string | undefined) =>
-  Object.fromEntries(String(header || '').split(';').map((item) => {
-    const [key, ...rest] = item.trim().split('=')
-    return [key, decodeURIComponent(rest.join('='))]
-  }).filter(([key]) => key))
+  Object.fromEntries(
+    String(header || '')
+      .split(';')
+      .map((item) => {
+        const [key, ...rest] = item.trim().split('=')
+        return [key, decodeURIComponent(rest.join('='))]
+      })
+      .filter(([key]) => key),
+  )
 
 const readRequestJson = async (request: http.IncomingMessage) => {
   const chunks: Buffer[] = []
   for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
   const body = Buffer.concat(chunks).toString('utf8')
-  return body ? JSON.parse(body) as Record<string, unknown> : {}
+  return body ? (JSON.parse(body) as Record<string, unknown>) : {}
 }
 
-const sendJson = (response: http.ServerResponse, statusCode: number, data: unknown, meta: Record<string, unknown> = {}) => {
+const sendJson = (
+  response: http.ServerResponse,
+  statusCode: number,
+  data: unknown,
+  meta: Record<string, unknown> = {},
+) => {
   response.writeHead(statusCode, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
@@ -579,10 +606,7 @@ const readReportDetail = async (dataDir: string, runId: string) => {
   }
 }
 
-const createWebSessionManager = async (input: {
-  dataDir: string
-  accessMode: WebAccessMode
-}) => {
+const createWebSessionManager = async (input: { dataDir: string; accessMode: WebAccessMode }) => {
   const authRequired = input.accessMode === 'public'
   const webStateDir = resolveWebStateDir(input.dataDir)
   const database = createWebAuthDatabase(webStateDir)
@@ -590,7 +614,8 @@ const createWebSessionManager = async (input: {
   if (authRequired && !config) throw new Error(`公网模式必须先初始化 Web 认证: ${resolveWebSecretPath(input.dataDir)}`)
 
   const audit = (eventType: string, ip: string | null, details: Record<string, unknown> = {}) => {
-    database.prepare('INSERT INTO auth_audit(event_type, ip, details_json, created_at) VALUES (?, ?, ?, ?)')
+    database
+      .prepare('INSERT INTO auth_audit(event_type, ip, details_json, created_at) VALUES (?, ?, ?, ?)')
       .run(eventType, ip, canonicalize(details), new Date().toISOString())
   }
 
@@ -599,13 +624,18 @@ const createWebSessionManager = async (input: {
     const sessionId = parseCookies(request.headers.cookie).lotterymcp_session
     if (!sessionId) return { authenticated: false }
     const now = new Date().toISOString()
-    const row = database.prepare(`
+    const row = database
+      .prepare(
+        `
       SELECT * FROM sessions WHERE session_id = ?
         AND expires_at > ? AND absolute_expires_at > ?
-    `).get(sessionId, now, now) as any
+    `,
+      )
+      .get(sessionId, now, now) as { session_id: string } | undefined
     if (!row) return { authenticated: false }
     const nextExpires = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString()
-    database.prepare('UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE session_id = ?')
+    database
+      .prepare('UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE session_id = ?')
       .run(now, nextExpires, sessionId)
     return { authenticated: true, sessionId }
   }
@@ -613,8 +643,13 @@ const createWebSessionManager = async (input: {
   const login = async (request: http.IncomingMessage, response: http.ServerResponse) => {
     if (!authRequired || !config) return sendJson(response, 200, { authenticated: true })
     const ip = request.socket.remoteAddress || 'unknown'
-    const attempt = database.prepare('SELECT * FROM login_attempts WHERE ip = ?').get(ip) as any
-    if (attempt && Number(attempt.failed_count) >= 8 && Date.now() - Date.parse(String(attempt.last_failed_at)) < 15 * 60 * 1000) {
+    const attempt = database.prepare('SELECT * FROM login_attempts WHERE ip = ?').get(ip) as
+      { failed_count: unknown; last_failed_at: unknown } | undefined
+    if (
+      attempt &&
+      Number(attempt.failed_count) >= 8 &&
+      Date.now() - Date.parse(String(attempt.last_failed_at)) < 15 * 60 * 1000
+    ) {
       audit('login-throttled', ip)
       return sendText(response, 429, '登录尝试过多，请稍后再试。')
     }
@@ -626,31 +661,46 @@ const createWebSessionManager = async (input: {
     const step = Math.floor(Date.now() / 30000)
     const totpOk = [-1, 0, 1].some((offset) => generateTotp(config.totpSecret, step + offset) === totp)
     const replayKey = `${step}:${totp}`
-    const replay = totpOk ? database.prepare('SELECT code_step FROM totp_replay WHERE code_step = ?').get(replayKey) : null
+    const replay = totpOk
+      ? database.prepare('SELECT code_step FROM totp_replay WHERE code_step = ?').get(replayKey)
+      : null
     if (!passwordOk || !totpOk || replay) {
-      database.prepare(`
+      database
+        .prepare(
+          `
         INSERT INTO login_attempts(ip, failed_count, last_failed_at) VALUES (?, 1, ?)
         ON CONFLICT(ip) DO UPDATE SET failed_count = failed_count + 1, last_failed_at = excluded.last_failed_at
-      `).run(ip, new Date().toISOString())
+      `,
+        )
+        .run(ip, new Date().toISOString())
       audit('login-failed', ip, { passwordOk, totpOk, replay: Boolean(replay) })
       return sendText(response, 401, '口令或动态验证码无效。')
     }
     database.prepare('DELETE FROM login_attempts WHERE ip = ?').run(ip)
-    database.prepare('INSERT OR IGNORE INTO totp_replay(code_step, used_at) VALUES (?, ?)').run(replayKey, new Date().toISOString())
+    database
+      .prepare('INSERT OR IGNORE INTO totp_replay(code_step, used_at) VALUES (?, ?)')
+      .run(replayKey, new Date().toISOString())
     const sessionId = base64Url(randomBytes(32))
     const now = new Date()
-    database.prepare(`
+    database
+      .prepare(
+        `
       INSERT INTO sessions(session_id, created_at, last_seen_at, expires_at, absolute_expires_at)
       VALUES (?, ?, ?, ?, ?)
-    `).run(
-      sessionId,
-      now.toISOString(),
-      now.toISOString(),
-      new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString(),
-      new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(),
-    )
+    `,
+      )
+      .run(
+        sessionId,
+        now.toISOString(),
+        now.toISOString(),
+        new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString(),
+        new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+      )
     audit('login-success', ip)
-    response.setHeader('set-cookie', `lotterymcp_session=${encodeURIComponent(sessionId)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${input.accessMode === 'public' ? '; Secure' : ''}`)
+    response.setHeader(
+      'set-cookie',
+      `lotterymcp_session=${encodeURIComponent(sessionId)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${input.accessMode === 'public' ? '; Secure' : ''}`,
+    )
     return sendJson(response, 200, { authenticated: true })
   }
 
@@ -675,6 +725,7 @@ export const runPl3DailyOnce = async (input: {
   periods?: number
   tickets?: number
   playType?: Pl3PlayType
+  trainingStatus?: 'confirmed' | 'mixed'
   sync?: boolean
   migrate?: boolean
   notify?: boolean
@@ -698,7 +749,9 @@ export const runPl3DailyOnce = async (input: {
     const preview = previewPl3SchemaMigration(dataDir)
     if (preview.migrationRequired) {
       if (!input.migrate) {
-        throw new Error(`每日任务需要 schema ${preview.targetVersion}，请先运行 data migrate --apply，或本命令追加 --migrate。`)
+        throw new Error(
+          `每日任务需要 schema ${preview.targetVersion}，请先运行 data migrate --apply，或本命令追加 --migrate。`,
+        )
       }
       await applyPl3SchemaMigration(dataDir)
     }
@@ -731,6 +784,9 @@ export const runPl3DailyOnce = async (input: {
       periods: input.periods,
       tickets: input.tickets,
       playType: input.playType,
+      ...(input.trainingStatus === 'confirmed' || input.trainingStatus === 'mixed'
+        ? { trainingStatus: input.trainingStatus }
+        : {}),
     })
     const report = await writePl3DailyReport({
       dataDir,
@@ -762,19 +818,30 @@ export const runPl3DailyOnce = async (input: {
         store.close()
       }
     }
-    const notification = input.notify === false ? { skipped: true } : await sendEnterpriseWechat({
-      dataDir,
-      dedupeKey: envelope.data.predictionId,
-      text: [
-        '### Lotterymcp P3 每日预测完成',
-        `> 截止期号: ${envelope.data.afterPeriod}`,
-        `> 预测ID: ${envelope.data.predictionId}`,
-        `> 注数: ${envelope.data.query.tickets}`,
-        `> 报告: ${report.reportPath}`,
-      ].join('\n'),
-    })
+    const notification =
+      input.notify === false
+        ? { skipped: true }
+        : await sendEnterpriseWechat({
+            dataDir,
+            dedupeKey: envelope.data.predictionId,
+            text: [
+              '### Lotterymcp P3 每日预测完成',
+              `> 截止期号: ${envelope.data.afterPeriod}`,
+              `> 预测ID: ${envelope.data.predictionId}`,
+              `> 注数: ${envelope.data.query.tickets}`,
+              `> 报告: ${report.reportPath}`,
+            ].join('\n'),
+          })
     return { runId, prediction: envelope.data, report, sync: syncResult, notification }
   } catch (error) {
+    const inputParams = {
+      periods: input.periods ?? null,
+      tickets: input.tickets ?? null,
+      playType: input.playType ?? null,
+      trainingStatus: input.trainingStatus ?? null,
+      sync: input.sync ?? null,
+      dataMode: input.config.dataMode || 'official',
+    }
     if (storeOpened) {
       const store = openPl3Store({ dataDir })
       try {
@@ -789,6 +856,7 @@ export const runPl3DailyOnce = async (input: {
           level: 'error',
           eventType: 'daily-run-failed',
           message: error instanceof Error ? error.message : String(error),
+          details: { input: inputParams },
         })
       } finally {
         store.close()
@@ -862,13 +930,31 @@ export const servePl3Reports = async (input: {
       try {
         const schemaVersion = store.getSchemaVersion()
         const status = store.getStatus()
+        const latestDraw = await (async () => {
+          try {
+            const db = new Database(path.join(dataDir, 'pl3.sqlite'), { readonly: true })
+            const row = db
+              .prepare(
+                `SELECT period, period_num, draw_date, d1, d2, d3, numbers, status AS drawStatus
+               FROM draws ORDER BY period_num DESC LIMIT 1`,
+              )
+              .get()
+            db.close()
+            return row || null
+          } catch {
+            return null
+          }
+        })()
         const runs = schemaVersion >= 3 ? store.listOnlinePredictionRuns({ limit: 1 }) : []
         const latestReport = (await listDailyReports(dataDir, 1))[0] || null
         const detail = latestReport ? await readReportDetail(dataDir, latestReport.runId) : null
         const ledgerPath = path.join(dataDir, 'pl3-predictions.json')
         const ledger = await readJsonIfExists<Pl3PredictionLedger>(ledgerPath, { version: 1, predictions: [] })
         const latestPrediction = detail?.payload.prediction || ledger.predictions.at(-1) || null
-        const currentSettlement = await getCurrentSettlement(dataDir, latestPrediction?.predictionId || latestReport?.predictionId)
+        const currentSettlement = await getCurrentSettlement(
+          dataDir,
+          latestPrediction?.predictionId || latestReport?.predictionId,
+        )
         sendJson(response, 200, {
           generatedAt: new Date().toISOString(),
           accessMode,
@@ -879,7 +965,12 @@ export const servePl3Reports = async (input: {
             conflictRecords: status.conflictRecords,
             latestPeriod: status.latestPeriod,
             latestDrawDate: status.latestDrawDate,
+            latestDraw,
             dualSourceCoverage: status.dualSourceCoverage,
+            confidenceByYear: store.getConfidenceByYear(),
+            slaEvidence: await verifyPl3PredictionSla(ledgerPath, (prediction) =>
+              store.getPredictionSlaEvidence(prediction),
+            ),
           },
           latestRun: runs[0] || null,
           latestReport,
@@ -891,7 +982,6 @@ export const servePl3Reports = async (input: {
             provisional: ledger.predictions.filter((item) => item.settlement.status === 'provisional').length,
             confirmed: ledger.predictions.filter((item) => item.settlement.status === 'confirmed').length,
             disputed: ledger.predictions.filter((item) => item.settlement.status === 'disputed').length,
-            settled: ledger.predictions.filter((item) => item.settlement.status === 'settled').length,
           },
           tools: MCP_SERVER_TOOLS,
         })
@@ -899,6 +989,22 @@ export const servePl3Reports = async (input: {
         store.close()
       }
       return undefined
+    }
+    if (url.pathname === '/api/v1/draws') {
+      if (!hasPl3Database(dataDir)) return sendJson(response, 200, { draws: [], count: 0 })
+      const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 600), 1), 2000)
+      const db = new Database(path.join(dataDir, 'pl3.sqlite'), { readonly: true })
+      try {
+        const draws = db
+          .prepare(
+            `SELECT period, period_num, draw_date, d1, d2, d3, numbers, status AS drawStatus
+           FROM draws ORDER BY period_num DESC LIMIT ?`,
+          )
+          .all(limit)
+        return sendJson(response, 200, { draws, count: draws.length })
+      } finally {
+        db.close()
+      }
     }
     if (url.pathname === '/api/v1/reports') {
       const limit = Number(url.searchParams.get('limit') || 20)
@@ -924,11 +1030,194 @@ export const servePl3Reports = async (input: {
         store.close()
       }
     }
+    if (url.pathname === '/api/v1/ledger') {
+      const ledgerPath = path.join(dataDir, 'pl3-predictions.json')
+      const ledger = await readJsonIfExists<Pl3PredictionLedger>(ledgerPath, { version: 1, predictions: [] })
+      const rows = ledger.predictions
+        .slice()
+        .sort((left, right) => String(left.afterPeriod).localeCompare(String(right.afterPeriod)))
+        .map((prediction) => ({
+          predictionId: prediction.predictionId,
+          afterPeriod: prediction.afterPeriod,
+          playType: prediction.query?.playType,
+          targetPeriod: prediction.settlement?.targetPeriod ?? null,
+          actualNumbers: prediction.settlement?.actualNumbers ?? null,
+          status: prediction.settlement?.status ?? 'pending',
+          winningTickets: prediction.settlement?.winningTickets ?? 0,
+          returnAmount: prediction.settlement?.returnAmount ?? 0,
+          profit: prediction.settlement?.profit ?? 0,
+          generatedAt: prediction.generatedAt,
+          ticketCount: prediction.tickets?.length ?? 0,
+        }))
+      const totals = rows.reduce(
+        (acc, row) => {
+          acc.profit += row.profit
+          acc.winning += row.winningTickets
+          acc.hits += row.winningTickets > 0 ? 1 : 0
+          return acc
+        },
+        { profit: 0, winning: 0, hits: 0 },
+      )
+      return sendJson(response, 200, { rows, totals })
+    }
+    if (url.pathname === '/api/v1/trends') {
+      const ledgerPath = path.join(dataDir, 'pl3-predictions.json')
+      const ledger = await readJsonIfExists<Pl3PredictionLedger>(ledgerPath, { version: 1, predictions: [] })
+      const sorted = ledger.predictions
+        .slice()
+        .sort((left, right) => String(left.afterPeriod).localeCompare(String(right.afterPeriod)))
+      let cumulativeProfit = 0
+      let cumulativeHits = 0
+      const cumulativeProfitSeries: Array<{ period: string; value: number }> = []
+      const hitRateSeries: Array<{ period: string; value: number }> = []
+      const perPeriod: Array<{ period: string; profit: number; winning: boolean }> = []
+      sorted.forEach((prediction) => {
+        const profit = prediction.settlement?.profit ?? 0
+        const winning = (prediction.settlement?.winningTickets ?? 0) > 0
+        cumulativeProfit += profit
+        cumulativeHits += winning ? 1 : 0
+        const period = String(prediction.afterPeriod)
+        cumulativeProfitSeries.push({ period, value: cumulativeProfit })
+        hitRateSeries.push({ period, value: sorted.length ? cumulativeHits / sorted.length : 0 })
+        perPeriod.push({ period, profit, winning })
+      })
+      return sendJson(response, 200, {
+        cumulativeProfit: cumulativeProfitSeries,
+        hitRate: hitRateSeries,
+        perPeriod,
+        count: sorted.length,
+      })
+    }
+    if (url.pathname === '/api/v1/snapshots') {
+      if (!hasPl3Database(dataDir)) return sendJson(response, 200, { snapshots: [] })
+      const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true })
+      try {
+        const schemaVersion = store.getSchemaVersion()
+        if (schemaVersion < 2) return sendJson(response, 200, { snapshots: [] })
+        const snapshots = store.listDatasetSnapshots({ limit: 50 }).map((snapshot) => ({
+          snapshotId: snapshot.snapshotId,
+          fromPeriod: snapshot.fromPeriod,
+          afterPeriod: snapshot.afterPeriod,
+          recordCount: snapshot.recordCount,
+          dataHash: snapshot.dataHash,
+          codeCommit: snapshot.codeCommit,
+          quality: snapshot.quality,
+          createdAt: snapshot.createdAt,
+          verified: (() => {
+            try {
+              return store.verifyDatasetSnapshot(snapshot.snapshotId).valid
+            } catch {
+              return null
+            }
+          })(),
+        }))
+        return sendJson(response, 200, { snapshots })
+      } finally {
+        store.close()
+      }
+    }
+    const snapshotMatch = /^\/api\/v1\/snapshots\/([^/]+)$/.exec(url.pathname)
+    if (snapshotMatch) {
+      if (!hasPl3Database(dataDir)) return sendText(response, 404, '尚未找到排列3 SQLite 数据库。')
+      const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true })
+      try {
+        const schemaVersion = store.getSchemaVersion()
+        if (schemaVersion < 2) return sendText(response, 404, '快照功能需要 M002 迁移。')
+        const snapshotId = decodeURIComponent(snapshotMatch[1]!)
+        const snapshot = store.getDatasetSnapshot(snapshotId)
+        if (!snapshot) return sendText(response, 404, '未找到数据集快照。')
+        let verification: { valid: boolean; actualRecordCount: number; expectedRecordCount: number } | null = null
+        try {
+          const result = store.verifyDatasetSnapshot(snapshotId)
+          verification = {
+            valid: result.valid,
+            actualRecordCount: result.actualRecordCount,
+            expectedRecordCount: result.expectedRecordCount,
+          }
+        } catch {
+          verification = null
+        }
+        const experiments = store
+          .listExperiments({ limit: 100 })
+          .filter((item) => item.datasetSnapshotId === snapshotId)
+          .map((item) => ({
+            experimentId: item.experimentId,
+            name: item.name,
+            mode: item.mode,
+            status: item.status,
+            reportHash: item.reportHash,
+            reportPath: item.reportPath,
+            createdAt: item.createdAt,
+          }))
+        return sendJson(response, 200, { snapshot, verification, experiments })
+      } finally {
+        store.close()
+      }
+    }
+    if (url.pathname === '/api/v1/experiments') {
+      if (!hasPl3Database(dataDir)) return sendJson(response, 200, { experiments: [] })
+      const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true })
+      try {
+        const limit = Number(url.searchParams.get('limit') || 20)
+        const schemaVersion = store.getSchemaVersion()
+        const experiments = schemaVersion >= 2 ? store.listExperiments({ limit }) : []
+        const enriched = experiments.map((experiment) => {
+          let specSummary: Record<string, unknown> | null = null
+          try {
+            const spec = JSON.parse(experiment.specJson)
+            specSummary = {
+              hypothesis: spec.hypothesis,
+              mode: spec.mode,
+              models: (spec.models || []).map((item: { modelId: string }) => item.modelId),
+              primaryMetric: spec.primaryMetric,
+            }
+          } catch {
+            /* spec 不可解析时回退为 null */
+          }
+          return {
+            experimentId: experiment.experimentId,
+            name: experiment.name,
+            mode: experiment.mode,
+            status: experiment.status,
+            datasetSnapshotId: experiment.datasetSnapshotId,
+            specHash: experiment.specHash,
+            codeCommit: experiment.codeCommit,
+            reportHash: experiment.reportHash,
+            reportPath: experiment.reportPath,
+            createdAt: experiment.createdAt,
+            spec: specSummary,
+          }
+        })
+        return sendJson(response, 200, { experiments: enriched })
+      } finally {
+        store.close()
+      }
+    }
+    const experimentMatch = /^\/api\/v1\/experiments\/([^/]+)$/.exec(url.pathname)
+    if (experimentMatch) {
+      if (!hasPl3Database(dataDir)) return sendText(response, 404, '尚未找到排列3 SQLite 数据库。')
+      const store = openPl3Store({ dataDir, readonly: true, fileMustExist: true })
+      try {
+        const schemaVersion = store.getSchemaVersion()
+        if (schemaVersion < 2) return sendText(response, 404, '实验功能需要 M002 迁移。')
+        const detail = inspectPl3Experiment(store, decodeURIComponent(experimentMatch[1]!))
+        return sendJson(response, 200, detail)
+      } finally {
+        store.close()
+      }
+    }
     return sendText(response, 404, 'API not found')
   }
 
   const server = http.createServer(async (request, response) => {
     try {
+      response.setHeader('X-Content-Type-Options', 'nosniff')
+      response.setHeader('X-Frame-Options', 'DENY')
+      response.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+      response.setHeader(
+        'Content-Security-Policy',
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
+      )
       const url = new URL(request.url || '/', `http://${host}`)
       if (url.pathname === '/healthz' || url.pathname === '/readyz' || url.pathname.startsWith('/api/')) {
         await handleApi(request, response, url)
@@ -939,7 +1228,10 @@ export const servePl3Reports = async (input: {
       if (!filePath.startsWith(path.resolve(assetsDir))) throw new Error('越界路径')
       if (!existsSync(filePath)) filePath = path.join(assetsDir, 'index.html')
       const body = await readFile(filePath)
-      response.writeHead(200, { 'content-type': contentTypeFor(filePath), 'cache-control': filePath.endsWith('index.html') ? 'no-store' : 'public, max-age=31536000, immutable' })
+      response.writeHead(200, {
+        'content-type': contentTypeFor(filePath),
+        'cache-control': filePath.endsWith('index.html') ? 'no-store' : 'public, max-age=31536000, immutable',
+      })
       response.end(body)
     } catch (error) {
       response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })

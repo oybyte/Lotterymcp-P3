@@ -18,6 +18,7 @@ export const PL3_DEFAULT_PERIODS = 200;
 export const PL3_MAX_PERIODS = 1000;
 export const PL3_DEFAULT_TICKETS = 10;
 export const PL3_MAX_TICKETS = 100;
+export const PL3_DEFAULT_TRAINING_STATUS = 'mixed';
 export const PL3_MODEL_WEIGHTS = {
     positionFrequency: 0.3,
     digitFrequency: 0.2,
@@ -53,7 +54,9 @@ const parseNumbers = (record) => {
         ? record.numbersList
         : Array.isArray(record.numbers_list)
             ? record.numbers_list
-            : String(record.numbers || '').split(/[,\s]+/).filter(Boolean);
+            : String(record.numbers || '')
+                .split(/[,\s]+/)
+                .filter(Boolean);
     const values = raw.map((item) => Number(item));
     if (values.length !== 3 || values.some((item) => !Number.isInteger(item) || item < 0 || item > 9)) {
         return null;
@@ -66,12 +69,16 @@ export const normalizePl3Records = (records) => {
         if (!sourceRecord || typeof sourceRecord !== 'object') {
             throw new Pl3PredictionError('LOTTERYMCP_PL3_INVALID_RECORD', '排列3历史数据包含无效记录。');
         }
-        const lotteryType = String(sourceRecord.lotteryType || PL3_LOTTERY_TYPE).trim().toLowerCase();
+        const lotteryType = String(sourceRecord.lotteryType || PL3_LOTTERY_TYPE)
+            .trim()
+            .toLowerCase();
         if (lotteryType !== PL3_LOTTERY_TYPE) {
             throw new Pl3PredictionError('LOTTERYMCP_ONLY_PL3_SUPPORTED', `当前版本只支持排列3(pl3)，不支持 ${lotteryType || '(空)'}。`);
         }
         const period = String(sourceRecord.period || '').trim();
-        const drawDate = String(sourceRecord.drawDate || '').trim().slice(0, 10);
+        const drawDate = String(sourceRecord.drawDate || '')
+            .trim()
+            .slice(0, 10);
         const numbersList = parseNumbers(sourceRecord);
         if (!period || !/^\d{5,12}$/.test(period)) {
             throw new Pl3PredictionError('LOTTERYMCP_PL3_INVALID_PERIOD', `排列3历史数据包含无效期号: ${period || '(空)'}`);
@@ -91,7 +98,10 @@ export const normalizePl3Records = (records) => {
         };
         const previous = byPeriod.get(period);
         if (previous && (previous.numbers !== normalized.numbers || previous.drawDate !== normalized.drawDate)) {
-            throw new Pl3PredictionError('LOTTERYMCP_PL3_DUPLICATE_PERIOD', `排列3第 ${period} 期存在冲突的重复记录。`, { previous, current: normalized });
+            throw new Pl3PredictionError('LOTTERYMCP_PL3_DUPLICATE_PERIOD', `排列3第 ${period} 期存在冲突的重复记录。`, {
+                previous,
+                current: normalized,
+            });
         }
         byPeriod.set(period, normalized);
     }
@@ -143,13 +153,36 @@ const scoreDirectCombinations = (records) => {
                 const span = Math.max(...numbers) - Math.min(...numbers);
                 const positionFrequency = numbers.reduce((value, digit, index) => value + positionCounts[index][digit] / total, 0) / 3;
                 const digitFrequency = numbers.reduce((value, digit) => value + digitCounts[digit] / (total * 3), 0) / 3;
-                const score = positionFrequency * PL3_MODEL_WEIGHTS.positionFrequency +
-                    digitFrequency * PL3_MODEL_WEIGHTS.digitFrequency +
-                    (sumCounts[sum] / total) * PL3_MODEL_WEIGHTS.sumFrequency +
-                    (oddCounts[oddCount] / total) * PL3_MODEL_WEIGHTS.oddEvenFrequency +
-                    (spanCounts[span] / total) * PL3_MODEL_WEIGHTS.spanFrequency +
-                    (typeCounts[numberType(numbers)] / total) * PL3_MODEL_WEIGHTS.numberTypeFrequency;
-                combinations.push({ numbers, display: `${hundred}${ten}${unit}`, score: round(score) });
+                const positionFrequencyValue = positionFrequency * PL3_MODEL_WEIGHTS.positionFrequency;
+                const digitFrequencyValue = digitFrequency * PL3_MODEL_WEIGHTS.digitFrequency;
+                const sumFrequencyValue = (sumCounts[sum] / total) * PL3_MODEL_WEIGHTS.sumFrequency;
+                const oddEvenFrequencyValue = (oddCounts[oddCount] / total) * PL3_MODEL_WEIGHTS.oddEvenFrequency;
+                const spanFrequencyValue = (spanCounts[span] / total) * PL3_MODEL_WEIGHTS.spanFrequency;
+                const numberTypeFrequencyValue = (typeCounts[numberType(numbers)] / total) * PL3_MODEL_WEIGHTS.numberTypeFrequency;
+                const contributingFeatures = [
+                    ['positionFrequency', positionFrequencyValue],
+                    ['digitFrequency', digitFrequencyValue],
+                    ['sumFrequency', sumFrequencyValue],
+                    ['oddEvenFrequency', oddEvenFrequencyValue],
+                    ['spanFrequency', spanFrequencyValue],
+                    ['numberTypeFrequency', numberTypeFrequencyValue],
+                ];
+                const composition = {
+                    positionFrequency: round(positionFrequencyValue),
+                    digitFrequency: round(digitFrequencyValue),
+                    sumFrequency: round(sumFrequencyValue),
+                    oddEvenFrequency: round(oddEvenFrequencyValue),
+                    spanFrequency: round(spanFrequencyValue),
+                    numberTypeFrequency: round(numberTypeFrequencyValue),
+                    leadingFeature: contributingFeatures.sort((left, right) => right[1] - left[1])[0][0],
+                };
+                const score = positionFrequencyValue +
+                    digitFrequencyValue +
+                    sumFrequencyValue +
+                    oddEvenFrequencyValue +
+                    spanFrequencyValue +
+                    numberTypeFrequencyValue;
+                combinations.push({ numbers, display: `${hundred}${ten}${unit}`, score: round(score), composition });
             }
         }
     }
@@ -158,12 +191,24 @@ const scoreDirectCombinations = (records) => {
 const buildTicketPools = (records) => {
     const directScores = scoreDirectCombinations(records);
     const scoreByDisplay = new Map(directScores.map((item) => [item.display, item.score]));
+    const compositionByDisplay = new Map(directScores.map((item) => [item.display, item.composition]));
+    const averageComposition = (variants) => {
+        const base = Object.fromEntries(Object.keys(directScores[0].composition)
+            .filter((key) => key !== 'leadingFeature')
+            .map((key) => {
+            const average = variants.reduce((sum, item) => sum + (compositionByDisplay.get(item)?.[key] || 0), 0) / variants.length;
+            return [key, round(average)];
+        }));
+        const leadingFeature = Object.entries(base).sort((left, right) => right[1] - left[1])[0][0];
+        return { ...base, leadingFeature };
+    };
     const direct = directScores.map((item, index) => ({
         rank: index + 1,
         playType: 'direct',
         numbers: item.numbers,
         display: item.display,
         score: item.score,
+        scoreComposition: item.composition,
     }));
     const group3 = [];
     for (let pairDigit = 0; pairDigit <= 9; pairDigit += 1) {
@@ -180,11 +225,14 @@ const buildTicketPools = (records) => {
                 score: round(score),
                 pairDigit,
                 singleDigit,
+                scoreComposition: averageComposition(variants),
             });
         }
     }
     group3.sort((left, right) => right.score - left.score || left.display.localeCompare(right.display));
-    group3.forEach((ticket, index) => { ticket.rank = index + 1; });
+    group3.forEach((ticket, index) => {
+        ticket.rank = index + 1;
+    });
     const group6 = [];
     for (let first = 0; first <= 7; first += 1) {
         for (let second = first + 1; second <= 8; second += 1) {
@@ -197,12 +245,15 @@ const buildTicketPools = (records) => {
                     numbers: [first, second, third],
                     display: `${first}${second}${third}`,
                     score: round(score),
+                    scoreComposition: averageComposition(variants),
                 });
             }
         }
     }
     group6.sort((left, right) => right.score - left.score || left.display.localeCompare(right.display));
-    group6.forEach((ticket, index) => { ticket.rank = index + 1; });
+    group6.forEach((ticket, index) => {
+        ticket.rank = index + 1;
+    });
     return { direct, group3, group6 };
 };
 export const scorePl3TicketPools = (sourceRecords) => buildTicketPools(normalizePl3Records(sourceRecords));
@@ -272,7 +323,7 @@ export const backtestPl3 = (sourceRecords, options = {}) => {
     const payouts = resolvePayouts(options.payouts);
     const testCount = Math.min(100, Math.max(records.length - PL3_MIN_RECORDS, 0));
     const emptyPlayMetrics = () => ({
-        ticketsPerDraw: playType === 'mixed' ? allocateMixedTickets(tickets).direct : playType === 'direct' ? tickets : 0,
+        ticketsPerDraw: 0,
         winningTickets: 0,
         winningDraws: 0,
         hitRate: 0,
@@ -285,8 +336,14 @@ export const backtestPl3 = (sourceRecords, options = {}) => {
     };
     const allocation = playType === 'mixed'
         ? allocateMixedTickets(tickets)
-        : { direct: playType === 'direct' ? tickets : 0, group3: playType === 'group3' ? tickets : 0, group6: playType === 'group6' ? tickets : 0 };
-    PLAY_TYPES.forEach((type) => { plays[type].ticketsPerDraw = allocation[type]; });
+        : {
+            direct: playType === 'direct' ? tickets : 0,
+            group3: playType === 'group3' ? tickets : 0,
+            group6: playType === 'group6' ? tickets : 0,
+        };
+    PLAY_TYPES.forEach((type) => {
+        plays[type].ticketsPerDraw = allocation[type];
+    });
     if (testCount === 0) {
         return {
             status: 'insufficient_data',
@@ -330,7 +387,9 @@ export const backtestPl3 = (sourceRecords, options = {}) => {
                 wonPlays.add(ticket.playType);
             }
         }
-        wonPlays.forEach((type) => { plays[type].winningDraws += 1; });
+        wonPlays.forEach((type) => {
+            plays[type].winningDraws += 1;
+        });
         const directTickets = generated.filter((ticket) => ticket.playType === 'direct');
         if (directTickets.some((ticket) => ticket.numbers.filter((value, position) => value === target.numbersList[position]).length >= 2)) {
             positionTwoDigitDraws += 1;
@@ -390,14 +449,51 @@ const normalizeTicketCount = (value) => {
     return parsed;
 };
 const normalizePlayType = (value) => {
-    const normalized = String(value || 'mixed').trim().toLowerCase();
+    const normalized = String(value || 'mixed')
+        .trim()
+        .toLowerCase();
     if (!['direct', 'group3', 'group6', 'mixed'].includes(normalized)) {
         throw new Pl3PredictionError('LOTTERYMCP_PL3_INVALID_PLAY_TYPE', `不支持的排列3玩法: ${normalized}`);
     }
     return normalized;
 };
+const summarizeDataStatus = (sourceRecords, trainingRecords) => {
+    const statusByPeriod = new Map();
+    for (const source of sourceRecords) {
+        if (source && typeof source === 'object') {
+            const period = String(source.period ?? '').trim();
+            const status = String(source.status ?? '').trim();
+            if (period && status)
+                statusByPeriod.set(period, status);
+        }
+    }
+    let confirmedRecords = 0;
+    let singleSourceRecords = 0;
+    let conflictRecords = 0;
+    let unclassifiedRecords = 0;
+    for (const record of trainingRecords) {
+        const status = statusByPeriod.get(record.period);
+        if (status === 'confirmed')
+            confirmedRecords += 1;
+        else if (status === 'single_source')
+            singleSourceRecords += 1;
+        else if (status === 'conflict')
+            conflictRecords += 1;
+        else
+            unclassifiedRecords += 1;
+    }
+    return {
+        confirmedRecords,
+        singleSourceRecords,
+        conflictRecords,
+        unclassifiedRecords,
+        dualSourceCoverage: confirmedRecords > 0 ? confirmedRecords / trainingRecords.length : null,
+    };
+};
 export const predictPl3 = (sourceRecords, query = {}) => {
-    const lotteryType = String(query.lotteryType || PL3_LOTTERY_TYPE).trim().toLowerCase();
+    const lotteryType = String(query.lotteryType || PL3_LOTTERY_TYPE)
+        .trim()
+        .toLowerCase();
     if (lotteryType !== PL3_LOTTERY_TYPE) {
         throw new Pl3PredictionError('LOTTERYMCP_ONLY_PL3_SUPPORTED', `当前版本只支持排列3(pl3)，不支持 ${lotteryType}。`);
     }
@@ -405,11 +501,30 @@ export const predictPl3 = (sourceRecords, query = {}) => {
     const tickets = normalizeTicketCount(query.tickets);
     const playType = normalizePlayType(query.playType);
     const payouts = resolvePayouts(query.payouts);
-    const normalized = normalizePl3Records(sourceRecords).slice(-periods);
+    const trainingStatus = query.trainingStatus === 'confirmed' ? 'confirmed' : PL3_DEFAULT_TRAINING_STATUS;
+    const statusByPeriod = new Map();
+    for (const source of sourceRecords) {
+        if (source && typeof source === 'object') {
+            statusByPeriod.set(String(source.period ?? '').trim(), String(source.status ?? '').trim());
+        }
+    }
+    let normalized = normalizePl3Records(sourceRecords);
+    if (trainingStatus === 'confirmed') {
+        normalized = normalized.filter((record) => statusByPeriod.get(record.period) === 'confirmed');
+    }
+    normalized = normalized.slice(-periods);
     if (normalized.length < PL3_MIN_RECORDS) {
-        throw new Pl3PredictionError('LOTTERYMCP_PL3_INSUFFICIENT_DATA', `排列3预测至少需要 ${PL3_MIN_RECORDS} 条有效历史记录，当前只有 ${normalized.length} 条。`, { required: PL3_MIN_RECORDS, actual: normalized.length });
+        const message = trainingStatus === 'confirmed'
+            ? `排列3预测使用双源确认训练窗口需要至少 ${PL3_MIN_RECORDS} 条 confirmed 记录，当前只有 ${normalized.length} 条（来源状态不足或需先完成双源同步）。`
+            : `排列3预测至少需要 ${PL3_MIN_RECORDS} 条有效历史记录，当前只有 ${normalized.length} 条。`;
+        throw new Pl3PredictionError('LOTTERYMCP_PL3_INSUFFICIENT_DATA', message, {
+            required: PL3_MIN_RECORDS,
+            actual: normalized.length,
+            trainingStatus,
+        });
     }
     const trainingDataHash = sha256(JSON.stringify(normalized.map((record) => [record.period, record.drawDate, record.numbers])));
+    const dataStatus = summarizeDataStatus(sourceRecords, normalized);
     const generated = generateTickets(normalized, tickets, playType);
     const generatedAt = query.generatedAt || new Date().toISOString();
     const predictionId = sha256(JSON.stringify({
@@ -419,6 +534,7 @@ export const predictPl3 = (sourceRecords, query = {}) => {
         tickets,
         playType,
         payouts,
+        trainingStatus,
     }));
     return {
         predictionId,
@@ -431,6 +547,7 @@ export const predictPl3 = (sourceRecords, query = {}) => {
             fromPeriod: normalized[0].period,
             toPeriod: normalized.at(-1).period,
             trainingDataHash,
+            dataStatus,
         },
         model: {
             name: 'weighted-frequency',
@@ -438,7 +555,7 @@ export const predictPl3 = (sourceRecords, query = {}) => {
             scoreIsProbability: false,
             weights: PL3_MODEL_WEIGHTS,
         },
-        query: { periods, tickets, playType },
+        query: { periods, tickets, playType, trainingStatus },
         payouts: {
             ...payouts,
             note: '奖金与 ROI 为按当前配置计算的历史模拟，不代表未来收益。',
@@ -472,7 +589,8 @@ export const writeJsonAtomically = async (targetPath, payload) => {
                 break;
             }
             catch (error) {
-                if (!['EACCES', 'EBUSY', 'EPERM'].includes(error?.code) || attempt >= 5)
+                const code = error?.code;
+                if (!['EACCES', 'EBUSY', 'EPERM'].includes(code ?? '') || attempt >= 5)
                     throw error;
                 await sleep(50 * 2 ** attempt);
             }
@@ -621,6 +739,31 @@ export const getPl3PredictionLedgerSummary = async (ledgerPath) => {
         provisional: ledger.predictions.filter((item) => item.settlement.status === 'provisional').length,
         confirmed: ledger.predictions.filter((item) => item.settlement.status === 'confirmed').length,
         disputed: ledger.predictions.filter((item) => item.settlement.status === 'disputed').length,
-        settled: ledger.predictions.filter((item) => item.settlement.status === 'settled').length,
+    };
+};
+export const verifyPl3PredictionSla = async (ledgerPath, getEvidence) => {
+    const ledger = await readLedger(ledgerPath);
+    const items = ledger.predictions.map((prediction) => {
+        const evidence = getEvidence({
+            afterPeriod: prediction.afterPeriod,
+            generatedAt: prediction.generatedAt,
+        });
+        return {
+            predictionId: prediction.predictionId,
+            afterPeriod: prediction.afterPeriod,
+            generatedAt: prediction.generatedAt,
+            targetPeriod: evidence.targetPeriod,
+            firstObservedAt: evidence.firstObservedAt,
+            predictedBeforeFirstObservation: evidence.predictedBeforeFirstObservation,
+        };
+    });
+    const withEvidence = items.filter((item) => item.predictedBeforeFirstObservation !== null).length;
+    return {
+        total: items.length,
+        withEvidence,
+        verifiedBeforeObservation: items.filter((item) => item.predictedBeforeFirstObservation === true).length,
+        violated: items.filter((item) => item.predictedBeforeFirstObservation === false).length,
+        pendingEvidence: items.filter((item) => item.predictedBeforeFirstObservation === null).length,
+        items,
     };
 };

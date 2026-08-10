@@ -9,16 +9,15 @@ const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js')
 const outputDir = path.join(repoRoot, 'docs', 'screenshots')
 const checkOnly = process.argv.includes('--check')
 
-const escapeXml = (value) => String(value)
-  .replaceAll('&', '&amp;')
-  .replaceAll('<', '&lt;')
-  .replaceAll('>', '&gt;')
-  .replaceAll('"', '&quot;')
+const escapeXml = (value) =>
+  String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
 
-const cleanOutput = (value) => value
-  .replace(/\u001b\[[0-9;]*m/g, '')
-  .replaceAll('\r\n', '\n')
-  .trim()
+const cleanOutput = (value) =>
+  value
+    // eslint-disable-next-line no-control-regex -- strips ANSI escape sequences from CLI output
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .replaceAll('\r\n', '\n')
+    .trim()
 
 const runCli = (args, options = {}) => {
   const result = spawnSync(process.execPath, [cliEntry, ...args], {
@@ -55,16 +54,19 @@ const renderSvg = (title, command, output) => {
       y += Math.floor(lineHeight / 2)
       continue
     }
-    const color = line.includes('排列3预测结果') || line.includes('请选择操作')
-      ? '#f2cc60'
-      : line.includes('候选票')
-        ? '#8ab4ff'
-        : line.includes('回测:')
-          ? '#c4b5fd'
-          : line.includes('历史模拟')
-            ? '#9da5b4'
-            : '#d9dde3'
-    body.push(`<text x="72" y="${y}" fill="${color}" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">${escapeXml(line)}</text>`)
+    const color =
+      line.includes('排列3预测结果') || line.includes('请选择操作')
+        ? '#f2cc60'
+        : line.includes('候选票')
+          ? '#8ab4ff'
+          : line.includes('回测:')
+            ? '#c4b5fd'
+            : line.includes('历史模拟')
+              ? '#9da5b4'
+              : '#d9dde3'
+    body.push(
+      `<text x="72" y="${y}" fill="${color}" font-size="24" font-family="Consolas, Microsoft YaHei UI, monospace">${escapeXml(line)}</text>`,
+    )
     y += lineHeight
   }
   body.push('</svg>')
@@ -104,7 +106,14 @@ try {
 
   const outputs = new Map([
     ['terminal-help.svg', renderSvg('Lotterymcp 排列3菜单', 'npx --yes lotterymcp@latest', menuOutput)],
-    ['terminal-pl3.svg', renderSvg('排列3预测与 Walk-forward 回测', 'lotterymcp predict --periods 200 --tickets 10 --play mixed', predictionOutput)],
+    [
+      'terminal-pl3.svg',
+      renderSvg(
+        '排列3预测与 Walk-forward 回测',
+        'lotterymcp predict --periods 200 --tickets 10 --play mixed',
+        predictionOutput,
+      ),
+    ],
   ])
 
   for (const [filename, content] of outputs) {

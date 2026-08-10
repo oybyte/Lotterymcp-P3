@@ -1,23 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import {
-  PL3_FEATURE_VERSION,
-  createPl3FeatureSnapshot,
-  type Pl3FeatureSnapshot,
-} from './pl3-features.js'
-import {
-  PL3_MODEL_VERSION,
-  scorePl3TicketPools,
-  writeJsonAtomically,
-  type Pl3Record,
-} from './pl3-prediction.js'
-import type {
-  Pl3ExperimentFoldStorageRecord,
-  Pl3ExperimentStatus,
-  Pl3ExperimentStorageRecord,
-  Pl3Store,
-} from './pl3-store.js'
+import { PL3_FEATURE_VERSION, createPl3FeatureSnapshot, type Pl3FeatureSnapshot } from './pl3-features.js'
+import { PL3_MODEL_VERSION, scorePl3TicketPools, writeJsonAtomically, type Pl3Record } from './pl3-prediction.js'
+import type { Pl3ExperimentFoldStorageRecord, Pl3ExperimentStorageRecord, Pl3Store } from './pl3-store.js'
 
 export const PL3_EXPERIMENT_SPEC_VERSION = 1
 export type Pl3BaselineModelId = 'uniform-theory' | 'random-monte-carlo' | typeof PL3_MODEL_VERSION
@@ -31,11 +17,14 @@ export type Pl3ExperimentSpecInput = {
   researchBatchId?: string
   datasetSnapshotId: string
   featureVersion?: typeof PL3_FEATURE_VERSION
-  models?: Array<Pl3BaselineModelId | {
-    modelId: Pl3BaselineModelId
-    params?: Record<string, unknown>
-    searchSpace?: Record<string, unknown[]>
-  }>
+  models?: Array<
+    | Pl3BaselineModelId
+    | {
+        modelId: Pl3BaselineModelId
+        params?: Record<string, unknown>
+        searchSpace?: Record<string, unknown[]>
+      }
+  >
   primaryMetric?: 'normalizedRank.mean'
   secondaryMetrics?: string[]
   exclusionRules?: string[]
@@ -160,9 +149,8 @@ const canonicalize = (value: unknown): string => {
 
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex')
 const round = (value: number) => Number(value.toFixed(12))
-const mean = (values: readonly number[]) => values.length > 0
-  ? values.reduce((total, value) => total + value, 0) / values.length
-  : 0
+const mean = (values: readonly number[]) =>
+  values.length > 0 ? values.reduce((total, value) => total + value, 0) / values.length : 0
 const median = (values: readonly number[]) => {
   if (values.length === 0) return 0
   const sorted = [...values].sort((left, right) => left - right)
@@ -198,28 +186,32 @@ export const normalizePl3ExperimentSpec = (input: Pl3ExperimentSpecInput): Pl3Ex
   if (!['development', 'confirmatory'].includes(mode)) throw new Error(`不支持的实验模式: ${mode}`)
   const allowedModels = new Set<Pl3BaselineModelId>(['uniform-theory', 'random-monte-carlo', PL3_MODEL_VERSION])
   const rawModels = input.models?.length ? input.models : [PL3_MODEL_VERSION]
-  const models = rawModels.map((item) => {
-    const rawModelId = typeof item === 'string' ? item : item.modelId
-    if (!allowedModels.has(rawModelId as Pl3BaselineModelId)) {
-      throw new Error(`不支持的排列3实验模型: ${rawModelId}`)
-    }
-    const modelId = rawModelId as Pl3BaselineModelId
-    const params = typeof item === 'string' ? {} : { ...(item.params || {}) }
-    const searchSpace = typeof item === 'string' ? {} : { ...(item.searchSpace || {}) }
-    if (modelId === PL3_MODEL_VERSION) {
-      params.historyWindow = normalizeInteger(params.historyWindow, 200, 100, 1000, 'historyWindow')
-      const rawHistoryWindows = searchSpace.historyWindow || []
-      if (!Array.isArray(rawHistoryWindows)) throw new Error('searchSpace.historyWindow 必须是数组。')
-      searchSpace.historyWindow = [...new Set(rawHistoryWindows.map((value) =>
-        normalizeInteger(value, 200, 100, 1000, 'searchSpace.historyWindow'),
-      ))].sort((left, right) => Number(left) - Number(right))
-      const unknownKeys = Object.keys(searchSpace).filter((key) => key !== 'historyWindow')
-      if (unknownKeys.length > 0) throw new Error(`weighted-frequency-v1 不支持搜索参数: ${unknownKeys.join(', ')}`)
-    } else if (Object.keys(searchSpace).length > 0) {
-      throw new Error(`基线模型 ${modelId} 不接受参数搜索空间。`)
-    }
-    return { modelId, params, searchSpace }
-  }).sort((left, right) => left.modelId.localeCompare(right.modelId))
+  const models = rawModels
+    .map((item) => {
+      const rawModelId = typeof item === 'string' ? item : item.modelId
+      if (!allowedModels.has(rawModelId as Pl3BaselineModelId)) {
+        throw new Error(`不支持的排列3实验模型: ${rawModelId}`)
+      }
+      const modelId = rawModelId as Pl3BaselineModelId
+      const params = typeof item === 'string' ? {} : { ...(item.params || {}) }
+      const searchSpace = typeof item === 'string' ? {} : { ...(item.searchSpace || {}) }
+      if (modelId === PL3_MODEL_VERSION) {
+        params.historyWindow = normalizeInteger(params.historyWindow, 200, 100, 1000, 'historyWindow')
+        const rawHistoryWindows = searchSpace.historyWindow || []
+        if (!Array.isArray(rawHistoryWindows)) throw new Error('searchSpace.historyWindow 必须是数组。')
+        searchSpace.historyWindow = [
+          ...new Set(
+            rawHistoryWindows.map((value) => normalizeInteger(value, 200, 100, 1000, 'searchSpace.historyWindow')),
+          ),
+        ].sort((left, right) => Number(left) - Number(right))
+        const unknownKeys = Object.keys(searchSpace).filter((key) => key !== 'historyWindow')
+        if (unknownKeys.length > 0) throw new Error(`weighted-frequency-v1 不支持搜索参数: ${unknownKeys.join(', ')}`)
+      } else if (Object.keys(searchSpace).length > 0) {
+        throw new Error(`基线模型 ${modelId} 不接受参数搜索空间。`)
+      }
+      return { modelId, params, searchSpace }
+    })
+    .sort((left, right) => left.modelId.localeCompare(right.modelId))
   if (new Set(models.map((item) => item.modelId)).size !== models.length) {
     throw new Error('同一 experiment spec 不能重复声明模型。')
   }
@@ -238,7 +230,9 @@ export const normalizePl3ExperimentSpec = (input: Pl3ExperimentSpecInput): Pl3Ex
     models,
     primaryMetric: 'normalizedRank.mean',
     secondaryMetrics: [...new Set(input.secondaryMetrics || DEFAULT_SECONDARY_METRICS)].sort(),
-    exclusionRules: [...new Set((input.exclusionRules || []).map((rule) => String(rule).trim()).filter(Boolean))].sort(),
+    exclusionRules: [
+      ...new Set((input.exclusionRules || []).map((rule) => String(rule).trim()).filter(Boolean)),
+    ].sort(),
     split: {
       minTrain: normalizeInteger(input.split?.minTrain, 1000, 1000, 10000, 'split.minTrain'),
       frozenCount: normalizeInteger(input.split?.frozenCount, 1000, 1000, 10000, 'split.frozenCount'),
@@ -254,17 +248,19 @@ export const normalizePl3ExperimentSpec = (input: Pl3ExperimentSpecInput): Pl3Ex
     },
     randomSeed: normalizeInteger(input.randomSeed, 20260717, 0, 0x7fffffff, 'randomSeed'),
     resource: {
-      maxRuntimeSeconds: normalizeInteger(input.resource?.maxRuntimeSeconds, 7200, 60, 86400, 'resource.maxRuntimeSeconds'),
+      maxRuntimeSeconds: normalizeInteger(
+        input.resource?.maxRuntimeSeconds,
+        7200,
+        60,
+        86400,
+        'resource.maxRuntimeSeconds',
+      ),
       maxCpuFraction: normalizePositiveNumber(input.resource?.maxCpuFraction, 0.5, 1, 'resource.maxCpuFraction'),
     },
   }
 }
 
-export const createPl3Experiment = (
-  store: Pl3Store,
-  input: Pl3ExperimentSpecInput,
-  codeCommit: string,
-) => {
+export const createPl3Experiment = (store: Pl3Store, input: Pl3ExperimentSpecInput, codeCommit: string) => {
   const spec = normalizePl3ExperimentSpec(input)
   const snapshot = store.getDatasetSnapshot(spec.datasetSnapshotId)
   if (!snapshot) throw new Error(`排列3数据 snapshot 不存在: ${spec.datasetSnapshotId}`)
@@ -277,12 +273,14 @@ export const createPl3Experiment = (
   if (!normalizedCommit) throw new Error('创建实验必须记录代码 commit。')
   const specJson = canonicalize(spec)
   const specHash = sha256(specJson)
-  const experimentId = sha256(canonicalize({
-    schemaVersion: 1,
-    specHash,
-    datasetHash: snapshot.dataHash,
-    codeCommit: normalizedCommit,
-  }))
+  const experimentId = sha256(
+    canonicalize({
+      schemaVersion: 1,
+      specHash,
+      datasetHash: snapshot.dataHash,
+      codeCommit: normalizedCommit,
+    }),
+  )
   const stored = store.registerExperiment({
     experimentId,
     schemaVersion: 1,
@@ -305,9 +303,9 @@ const seededRandom = (seed: number) => {
   return () => {
     state += 0x6d2b79f5
     let value = state
-    value = Math.imul(value ^ value >>> 15, value | 1)
-    value ^= value + Math.imul(value ^ value >>> 7, value | 61)
-    return ((value ^ value >>> 14) >>> 0) / 4294967296
+    value = Math.imul(value ^ (value >>> 15), value | 1)
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61)
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296
   }
 }
 
@@ -323,15 +321,14 @@ type Pl3ModelConfig = Pl3ExperimentSpec['models'][number]
 
 const modelCandidates = (model: Pl3ModelConfig): Pl3ModelConfig[] => {
   if (model.modelId !== PL3_MODEL_VERSION) return [{ ...model, params: { ...model.params }, searchSpace: {} }]
-  const windows = [
-    Number(model.params.historyWindow),
-    ...(model.searchSpace.historyWindow || []).map(Number),
-  ]
-  return [...new Set(windows)].sort((left, right) => left - right).map((historyWindow) => ({
-    modelId: model.modelId,
-    params: { ...model.params, historyWindow },
-    searchSpace: {},
-  }))
+  const windows = [Number(model.params.historyWindow), ...(model.searchSpace.historyWindow || []).map(Number)]
+  return [...new Set(windows)]
+    .sort((left, right) => left - right)
+    .map((historyWindow) => ({
+      modelId: model.modelId,
+      params: { ...model.params, historyWindow },
+      searchSpace: {},
+    }))
 }
 
 const parameterSimplicity = (model: Pl3ModelConfig) => {
@@ -442,20 +439,21 @@ const blockBootstrap = (
   }
 }
 
-const metricsToRows = (metrics: Pl3ModelMetrics) => [
-  { name: 'normalizedRank.mean', role: 'primary' as const, value: metrics.normalizedRank.mean },
-  { name: 'normalizedRank.median', role: 'secondary' as const, value: metrics.normalizedRank.median },
-  { name: 'mrr', role: 'secondary' as const, value: metrics.meanReciprocalRank },
-  { name: 'top10', role: 'secondary' as const, value: metrics.coverage.top10 },
-  { name: 'top20', role: 'secondary' as const, value: metrics.coverage.top20 },
-  { name: 'top50', role: 'secondary' as const, value: metrics.coverage.top50 },
-  { name: 'top100', role: 'secondary' as const, value: metrics.coverage.top100 },
-  ...metrics.positionAccuracy.flatMap((position, index) => [
-    { name: 'position.top1', role: 'secondary' as const, segment: String(index), value: position.top1 },
-    { name: 'position.top3', role: 'secondary' as const, segment: String(index), value: position.top3 },
-    { name: 'position.top5', role: 'secondary' as const, segment: String(index), value: position.top5 },
-  ]),
-].map((metric) => ({ ...metric, sampleCount: metrics.sampleCount }))
+const metricsToRows = (metrics: Pl3ModelMetrics) =>
+  [
+    { name: 'normalizedRank.mean', role: 'primary' as const, value: metrics.normalizedRank.mean },
+    { name: 'normalizedRank.median', role: 'secondary' as const, value: metrics.normalizedRank.median },
+    { name: 'mrr', role: 'secondary' as const, value: metrics.meanReciprocalRank },
+    { name: 'top10', role: 'secondary' as const, value: metrics.coverage.top10 },
+    { name: 'top20', role: 'secondary' as const, value: metrics.coverage.top20 },
+    { name: 'top50', role: 'secondary' as const, value: metrics.coverage.top50 },
+    { name: 'top100', role: 'secondary' as const, value: metrics.coverage.top100 },
+    ...metrics.positionAccuracy.flatMap((position, index) => [
+      { name: 'position.top1', role: 'secondary' as const, segment: String(index), value: position.top1 },
+      { name: 'position.top3', role: 'secondary' as const, segment: String(index), value: position.top3 },
+      { name: 'position.top5', role: 'secondary' as const, segment: String(index), value: position.top5 },
+    ]),
+  ].map((metric) => ({ ...metric, sampleCount: metrics.sampleCount }))
 
 const writeTextAtomically = async (outputPath: string, content: string) => {
   await mkdir(path.dirname(outputPath), { recursive: true })
@@ -500,16 +498,22 @@ const selectModelsForFold = async (input: {
   selectionIndex: number
   ownerId: string
 }) => {
-  const existing = input.store.listExperimentFolds(input.experiment.experimentId, 'inner')
+  const existing = input.store
+    .listExperimentFolds(input.experiment.experimentId, 'inner')
     .find((fold) => fold.foldIndex === input.selectionIndex && fold.status === 'complete')
   if (existing?.selectedParamsJson) {
     const selected = JSON.parse(existing.selectedParamsJson) as Record<string, Record<string, unknown>>
-    return input.spec.models.map((model) => ({ ...model, params: selected[model.modelId] || model.params, searchSpace: {} }))
+    return input.spec.models.map((model) => ({
+      ...model,
+      params: selected[model.modelId] || model.params,
+      searchSpace: {},
+    }))
   }
 
-  const validationEnd = input.spec.split.minTrain + Math.floor(
-    (input.targetStart - input.spec.split.minTrain) / input.spec.split.innerStep,
-  ) * input.spec.split.innerStep
+  const validationEnd =
+    input.spec.split.minTrain +
+    Math.floor((input.targetStart - input.spec.split.minTrain) / input.spec.split.innerStep) *
+      input.spec.split.innerStep
   const validationStart = Math.max(input.spec.split.minTrain, validationEnd - input.spec.split.innerValidation)
   const selectedModels: Pl3ModelConfig[] = []
   const candidateMetrics: Record<string, Array<{ params: Record<string, unknown>; meanNormalizedRank: number }>> = {}
@@ -530,19 +534,23 @@ const selectModelsForFold = async (input: {
 
   for (const model of input.spec.models) {
     const candidates = modelCandidates(model)
-    const scored = candidates.map((candidate) => {
-      const cases: Pl3EvaluationCase[] = []
-      for (let targetIndex = validationStart; targetIndex < validationEnd; targetIndex += 1) {
-        cases.push(evaluateModelCase(candidate, input.records, targetIndex, input.spec.randomSeed))
-      }
-      return {
-        model: candidate,
-        meanNormalizedRank: cases.length > 0 ? mean(cases.map((item) => item.normalizedRank)) : 0,
-      }
-    }).sort((left, right) =>
-      left.meanNormalizedRank - right.meanNormalizedRank ||
-      parameterSimplicity(left.model) - parameterSimplicity(right.model) ||
-      canonicalize(left.model.params).localeCompare(canonicalize(right.model.params)))
+    const scored = candidates
+      .map((candidate) => {
+        const cases: Pl3EvaluationCase[] = []
+        for (let targetIndex = validationStart; targetIndex < validationEnd; targetIndex += 1) {
+          cases.push(evaluateModelCase(candidate, input.records, targetIndex, input.spec.randomSeed))
+        }
+        return {
+          model: candidate,
+          meanNormalizedRank: cases.length > 0 ? mean(cases.map((item) => item.normalizedRank)) : 0,
+        }
+      })
+      .sort(
+        (left, right) =>
+          left.meanNormalizedRank - right.meanNormalizedRank ||
+          parameterSimplicity(left.model) - parameterSimplicity(right.model) ||
+          canonicalize(left.model.params).localeCompare(canonicalize(right.model.params)),
+      )
     selectedModels.push(scored[0]!.model)
     candidateMetrics[model.modelId] = scored.map((item) => ({
       params: item.model.params,
@@ -559,11 +567,14 @@ const selectModelsForFold = async (input: {
     experimentId: input.experiment.experimentId,
     foldLevel: 'inner',
     foldIndex: input.selectionIndex,
-    validationRange: validationStart < validationEnd ? {
-      fromPeriod: input.records[validationStart]!.period,
-      toPeriod: input.records[validationEnd - 1]!.period,
-      count: validationEnd - validationStart,
-    } : null,
+    validationRange:
+      validationStart < validationEnd
+        ? {
+            fromPeriod: input.records[validationStart]!.period,
+            toPeriod: input.records[validationEnd - 1]!.period,
+            count: validationEnd - validationStart,
+          }
+        : null,
     selectedParams,
     candidateMetrics,
     featureSnapshotIds,
@@ -608,7 +619,6 @@ const evaluateFold = async (input: {
   for (let targetIndex = input.targetStart; targetIndex < input.targetEnd; targetIndex += 1) {
     input.store.renewRuntimeLock('experiment-runner', input.ownerId)
     const training = input.records.slice(0, targetIndex)
-    const target = input.records[targetIndex]!
     if (requiresFeatures) {
       const featureSnapshot: Pl3FeatureSnapshot = createPl3FeatureSnapshot(input.store, {
         datasetSnapshotId: input.spec.datasetSnapshotId,
@@ -618,23 +628,29 @@ const evaluateFold = async (input: {
       })
       featureSnapshotIds.push(featureSnapshot.featureSnapshotId)
     }
-    for (const model of input.models) cases.push(
-      evaluateModelCase(model, input.records, targetIndex, input.spec.randomSeed),
-    )
+    for (const model of input.models)
+      cases.push(evaluateModelCase(model, input.records, targetIndex, input.spec.randomSeed))
   }
-  const modelMetrics = input.models.map((model) => calculateModelMetrics(
-    model.modelId,
-    cases.filter((item) => item.modelId === model.modelId),
-  ))
-  const bootstrap = Object.fromEntries(input.models.map((model) => {
-    const values = cases.filter((item) => item.modelId === model.modelId).map((item) => item.normalizedRank)
-    return [model.modelId, blockBootstrap(
-      values,
-      input.spec.bootstrap.resamples,
-      input.spec.bootstrap.blockLength,
-      stringSeed(input.spec.randomSeed, `${input.foldLevel}:${input.foldIndex}:${model.modelId}`),
-    )]
-  }))
+  const modelMetrics = input.models.map((model) =>
+    calculateModelMetrics(
+      model.modelId,
+      cases.filter((item) => item.modelId === model.modelId),
+    ),
+  )
+  const bootstrap = Object.fromEntries(
+    input.models.map((model) => {
+      const values = cases.filter((item) => item.modelId === model.modelId).map((item) => item.normalizedRank)
+      return [
+        model.modelId,
+        blockBootstrap(
+          values,
+          input.spec.bootstrap.resamples,
+          input.spec.bootstrap.blockLength,
+          stringSeed(input.spec.randomSeed, `${input.foldLevel}:${input.foldIndex}:${model.modelId}`),
+        ),
+      ]
+    }),
+  )
   return {
     schemaVersion: 1,
     experimentId: input.experiment.experimentId,
@@ -675,9 +691,12 @@ const runFoldSet = async (input: {
   selectNested?: boolean
   fixedModels?: Pl3ModelConfig[]
 }) => {
-  const existing = new Map(input.store.listExperimentFolds(input.experiment.experimentId, input.foldLevel)
-    .filter((fold) => fold.status === 'complete')
-    .map((fold) => [fold.foldIndex, fold]))
+  const existing = new Map(
+    input.store
+      .listExperimentFolds(input.experiment.experimentId, input.foldLevel)
+      .filter((fold) => fold.status === 'complete')
+      .map((fold) => [fold.foldIndex, fold]),
+  )
   let foldIndex = 0
   for (let targetStart = input.start; targetStart < input.end; targetStart += input.step) {
     const targetEnd = Math.min(targetStart + input.blockSize, input.end)
@@ -686,17 +705,19 @@ const runFoldSet = async (input: {
       continue
     }
     const startedAt = new Date().toISOString()
-    const models = input.fixedModels || (input.selectNested === false
-      ? input.spec.models.map((model) => ({ ...model, searchSpace: {} }))
-      : await selectModelsForFold({
-          store: input.store,
-          experiment: input.experiment,
-          spec: input.spec,
-          records: input.records,
-          targetStart,
-          selectionIndex: foldIndex,
-          ownerId: input.ownerId,
-        }))
+    const models =
+      input.fixedModels ||
+      (input.selectNested === false
+        ? input.spec.models.map((model) => ({ ...model, searchSpace: {} }))
+        : await selectModelsForFold({
+            store: input.store,
+            experiment: input.experiment,
+            spec: input.spec,
+            records: input.records,
+            targetStart,
+            selectionIndex: foldIndex,
+            ownerId: input.ownerId,
+          }))
     const base: Pl3ExperimentFoldStorageRecord = {
       experimentId: input.experiment.experimentId,
       foldLevel: input.foldLevel,
@@ -730,13 +751,15 @@ const runFoldSet = async (input: {
     const resultHash = sha256(resultJson)
     const relativePath = foldRelativePath(input.experiment.experimentId, input.foldLevel, foldIndex)
     await writeJsonAtomically(path.join(path.dirname(input.store.databasePath), relativePath), result)
-    result.modelMetrics.forEach((metrics) => input.store.replaceExperimentMetrics({
-      experimentId: input.experiment.experimentId,
-      foldLevel: input.foldLevel,
-      foldIndex,
-      modelId: metrics.modelId,
-      metrics: metricsToRows(metrics),
-    }))
+    result.modelMetrics.forEach((metrics) =>
+      input.store.replaceExperimentMetrics({
+        experimentId: input.experiment.experimentId,
+        foldLevel: input.foldLevel,
+        foldIndex,
+        modelId: metrics.modelId,
+        metrics: metricsToRows(metrics),
+      }),
+    )
     input.store.saveExperimentFold({
       ...base,
       status: 'complete',
@@ -760,10 +783,11 @@ const loadExperimentAndSpec = (store: Pl3Store, experimentId: string) => {
 const reportContent = async (store: Pl3Store, experimentId: string) => {
   const { experiment, spec } = loadExperimentAndSpec(store, experimentId)
   const includeFrozen = experiment.status === 'frozen_evaluated'
-  const folds = store.listExperimentFolds(experimentId)
-    .filter((fold) =>
-      fold.status === 'complete' &&
-      (fold.foldLevel === 'outer' || (includeFrozen && fold.foldLevel === 'frozen')),
+  const folds = store
+    .listExperimentFolds(experimentId)
+    .filter(
+      (fold) =>
+        fold.status === 'complete' && (fold.foldLevel === 'outer' || (includeFrozen && fold.foldLevel === 'frozen')),
     )
   const foldResults: Pl3FoldResult[] = []
   for (const fold of folds) {
@@ -771,13 +795,20 @@ const reportContent = async (store: Pl3Store, experimentId: string) => {
     foldResults.push(JSON.parse(await readFile(path.join(path.dirname(store.databasePath), fold.resultPath), 'utf8')))
   }
   const levels = ['outer', ...(includeFrozen ? ['frozen'] : [])]
-  const summary = Object.fromEntries(levels.map((level) => {
-    const levelCases = foldResults.filter((fold) => fold.foldLevel === level).flatMap((fold) => fold.cases)
-    return [level, spec.models.map((model) => calculateModelMetrics(
-      model.modelId,
-      levelCases.filter((item) => item.modelId === model.modelId),
-    ))]
-  }))
+  const summary = Object.fromEntries(
+    levels.map((level) => {
+      const levelCases = foldResults.filter((fold) => fold.foldLevel === level).flatMap((fold) => fold.cases)
+      return [
+        level,
+        spec.models.map((model) =>
+          calculateModelMetrics(
+            model.modelId,
+            levelCases.filter((item) => item.modelId === model.modelId),
+          ),
+        ),
+      ]
+    }),
+  )
   return {
     schemaVersion: 1,
     experimentId,
@@ -817,7 +848,12 @@ export const generatePl3ExperimentReport = async (store: Pl3Store, experimentId:
   await writeTextAtomically(path.join(dataDir, relativeMarkdownPath), markdown)
   const reportHash = sha256(canonicalize(report))
   store.setExperimentReport(experimentId, relativeJsonPath, reportHash)
-  return { report, reportHash, reportPath: path.join(dataDir, relativeJsonPath), markdownPath: path.join(dataDir, relativeMarkdownPath) }
+  return {
+    report,
+    reportHash,
+    reportPath: path.join(dataDir, relativeJsonPath),
+    markdownPath: path.join(dataDir, relativeMarkdownPath),
+  }
 }
 
 export const runPl3Experiment = async (store: Pl3Store, experimentId: string) => {
@@ -874,7 +910,8 @@ export const evaluatePl3ExperimentFrozen = async (store: Pl3Store, experimentId:
   if (loaded.experiment.status !== 'development_complete') {
     throw new Error(`实验 ${experimentId} 当前状态 ${loaded.experiment.status}，不能评估冻结区。`)
   }
-  const previousAttempts = (store.listExperimentAudit(experimentId) as any[])
+  const previousAttempts = store
+    .listExperimentAudit(experimentId)
     .filter((item) => item.action === 'frozen-evaluate' && item.status === 'started')
   if (previousAttempts.length > 0) throw new Error('该实验已经尝试过冻结评估，必须创建新 experimentId。')
   const records = store.getDatasetSnapshotRecords(loaded.spec.datasetSnapshotId)
@@ -884,7 +921,8 @@ export const evaluatePl3ExperimentFrozen = async (store: Pl3Store, experimentId:
   try {
     store.addExperimentAudit(experimentId, 'frozen-evaluate', 'started')
     store.updateExperimentStatus(experimentId, 'running', { expected: ['development_complete'] })
-    const outerFolds = store.listExperimentFolds(experimentId, 'outer')
+    const outerFolds = store
+      .listExperimentFolds(experimentId, 'outer')
       .filter((fold) => fold.status === 'complete' && fold.selectedParamsJson)
     const lastOuter = outerFolds.at(-1)
     const fixedModels = lastOuter?.selectedParamsJson

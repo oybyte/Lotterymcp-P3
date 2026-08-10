@@ -124,12 +124,19 @@ export const createLotteryToolCatalog = (client, options) => {
                 periods: z.number().int().min(100).max(1000).optional().describe('可选。读取历史期数，默认 200。'),
                 tickets: z.number().int().min(1).max(100).optional().describe('可选。候选注数，默认 10。'),
                 playType: z.enum(['direct', 'group3', 'group6', 'mixed']).optional().describe('可选。玩法，默认 mixed。'),
+                trainingStatus: z
+                    .enum(['confirmed', 'mixed'])
+                    .optional()
+                    .describe('可选。训练窗口的数据状态基线：confirmed 只用双官方源确认记录训练，mixed 混合单来源（默认 mixed）。'),
             },
             handler: async (args) => withToolExecution(() => predictionService.predict({
                 lotteryType: parsePl3LotteryType(args.lotteryType),
                 periods: typeof args.periods === 'number' ? args.periods : undefined,
                 tickets: typeof args.tickets === 'number' ? args.tickets : undefined,
                 playType: typeof args.playType === 'string' ? args.playType : undefined,
+                ...(args.trainingStatus === 'confirmed' || args.trainingStatus === 'mixed'
+                    ? { trainingStatus: args.trainingStatus }
+                    : {}),
             })),
         },
     ];

@@ -103,6 +103,7 @@ export declare const runPl3DailyOnce: (input: {
     periods?: number;
     tickets?: number;
     playType?: Pl3PlayType;
+    trainingStatus?: "confirmed" | "mixed";
     sync?: boolean;
     migrate?: boolean;
     notify?: boolean;

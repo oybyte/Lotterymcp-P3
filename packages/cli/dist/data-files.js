@@ -5,10 +5,12 @@ import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { parse } from 'csv-parse/sync';
 import { stringify } from 'csv-stringify/sync';
-import { openPl3Store, writeJsonAtomically, } from 'lotterymcp-core';
+import { openPl3Store, writeJsonAtomically } from 'lotterymcp-core';
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const resolveFormat = (filePath, value) => {
-    const format = String(value || path.extname(filePath).slice(1)).trim().toLowerCase();
+    const format = String(value || path.extname(filePath).slice(1))
+        .trim()
+        .toLowerCase();
     if (format !== 'json' && format !== 'csv') {
         throw new Error(`不支持的排列3文件格式: ${format || '(空)'}，只支持 json/csv。`);
     }
@@ -53,7 +55,9 @@ export const importPl3FileToStore = async (input) => {
         raw = await readFile(filePath);
     }
     catch (error) {
-        throw new Error(`无法读取排列3导入文件: ${filePath} (${error instanceof Error ? error.message : String(error)})`);
+        throw new Error(`无法读取排列3导入文件: ${filePath} (${error instanceof Error ? error.message : String(error)})`, {
+            cause: error,
+        });
     }
     const rawText = raw.toString('utf8');
     const records = format === 'json' ? parseJsonRecords(rawText) : parseCsvRecords(rawText);

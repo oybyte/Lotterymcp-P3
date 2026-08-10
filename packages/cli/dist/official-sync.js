@@ -28,7 +28,10 @@ export const parseJsonOrJsonp = (rawText) => {
     const trimmed = rawText.trim();
     const jsonText = trimmed.startsWith('{') || trimmed.startsWith('[')
         ? trimmed
-        : trimmed.replace(/^[^(]*\(/, '').replace(/\);\s*$/, '').replace(/\)\s*$/, '');
+        : trimmed
+            .replace(/^[^(]*\(/, '')
+            .replace(/\);\s*$/, '')
+            .replace(/\)\s*$/, '');
     return JSON.parse(jsonText);
 };
 const fetchPayload = async (url, referer, fetchImpl, context, onResponse) => {
@@ -61,13 +64,15 @@ const fetchPayload = async (url, referer, fetchImpl, context, onResponse) => {
     }
 };
 const normalizeSportteryRows = (payload) => {
-    const rows = Array.isArray(payload?.value?.list) ? payload.value.list : [];
-    return rows.map((row) => {
+    const value = payload?.value;
+    const rows = Array.isArray(value?.list) ? value.list : [];
+    return rows.map((entry) => {
+        const row = (entry ?? {});
         const numbersList = splitNumbers(row.lotteryDrawResult);
         return {
             lotteryType: 'pl3',
-            period: String(row.lotteryDrawNum || ''),
-            drawDate: String(row.lotteryDrawTime || row.lotteryDrawDate || '').slice(0, 10),
+            period: String(row.lotteryDrawNum ?? ''),
+            drawDate: String(row.lotteryDrawTime ?? row.lotteryDrawDate ?? '').slice(0, 10),
             numbers: numbersList.join(','),
             numbersList,
             source: 'official',
@@ -78,12 +83,13 @@ const normalizeSportteryRows = (payload) => {
 };
 const normalizeZhcwRows = (payload) => {
     const rows = Array.isArray(payload?.data) ? payload.data : [];
-    return rows.map((row) => {
+    return rows.map((entry) => {
+        const row = (entry ?? {});
         const numbersList = [...splitNumbers(row.frontWinningNum), ...splitNumbers(row.backWinningNum)];
         return {
             lotteryType: 'pl3',
-            period: String(row.issue || ''),
-            drawDate: String(row.openTime || '').slice(0, 10),
+            period: String(row.issue ?? ''),
+            drawDate: String(row.openTime ?? '').slice(0, 10),
             numbers: numbersList.join(','),
             numbersList,
             source: 'official',
@@ -129,8 +135,7 @@ const fetchPaginated = async (limit, fetchPage, pageDelayMs) => {
     return records.slice(0, limit);
 };
 const fetchSportteryRecords = async (limit, fetchImpl, onResponse) => {
-    const baseUrl = process.env.LOTTERYMCP_SPORTTERY_API_URL ||
-        'https://webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry';
+    const baseUrl = process.env.LOTTERYMCP_SPORTTERY_API_URL || 'https://webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry';
     let authoritativeTotal = null;
     const records = await fetchPaginated(limit, async (page, pageSize) => {
         const url = new URL(baseUrl);
@@ -186,7 +191,9 @@ export const fetchOfficialPl3Archive = async (limit, fetchImpl = fetch, provider
         const normalized = validateSyncRecords(records).reverse();
         const warnings = normalized.length === records.length
             ? []
-            : [`来源返回 ${records.length} 条记录，按期号规范化后为 ${normalized.length} 条，存在 ${records.length - normalized.length} 条重复或被合并记录。`];
+            : [
+                `来源返回 ${records.length} 条记录，按期号规范化后为 ${normalized.length} 条，存在 ${records.length - normalized.length} 条重复或被合并记录。`,
+            ];
         return { normalized, warnings };
     };
     if (provider === 'zhcw') {
@@ -220,7 +227,9 @@ export const fetchOfficialPl3Archive = async (limit, fetchImpl = fetch, provider
     catch (error) {
         primaryError = error;
         if (provider === 'lottery-gov-cn') {
-            throw new Error(`中国体彩网排列3数据不可用: ${error instanceof Error ? error.message : String(error)}`);
+            throw new Error(`中国体彩网排列3数据不可用: ${error instanceof Error ? error.message : String(error)}`, {
+                cause: error,
+            });
         }
     }
     try {
@@ -242,7 +251,7 @@ export const fetchOfficialPl3Archive = async (limit, fetchImpl = fetch, provider
     }
     catch (fallbackError) {
         throw new Error(`排列3公开数据源均不可用。体彩网: ${primaryError instanceof Error ? primaryError.message : String(primaryError)}；` +
-            `中彩网: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
+            `中彩网: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`, { cause: fallbackError });
     }
 };
 export const fetchOfficialPl3Records = async (limit, fetchImpl = fetch) => {
@@ -264,40 +273,6 @@ const writeBufferAtomically = async (outputPath, content) => {
         }
         throw error;
     }
-};
-const persistRawResponses = async (dataDir, responses) => {
-    const rawEntries = [];
-    for (const response of responses) {
-        const contentHash = sha256(response.rawText);
-        const year = response.fetchedAt.slice(0, 4);
-        const relativePath = path.join('raw', response.provider, year, `${contentHash}.json.gz`);
-        const outputPath = path.join(dataDir, relativePath);
-        if (!existsSync(outputPath))
-            await writeBufferAtomically(outputPath, gzipSync(Buffer.from(response.rawText, 'utf8')));
-        rawEntries.push({
-            provider: response.provider,
-            page: response.page,
-            url: response.url,
-            statusCode: response.statusCode,
-            fetchedAt: response.fetchedAt,
-            contentHash,
-            rawPath: relativePath.replaceAll('\\', '/'),
-        });
-    }
-    const aggregateHash = sha256(JSON.stringify(rawEntries.map((item) => item.contentHash)));
-    const manifestRelativePath = path.join('raw', 'manifests', `${aggregateHash}.json`);
-    const manifestPath = path.join(dataDir, manifestRelativePath);
-    await writeJsonAtomically(manifestPath, {
-        schemaVersion: 1,
-        generatedAt: new Date().toISOString(),
-        aggregateHash,
-        responses: rawEntries,
-    });
-    return {
-        aggregateHash,
-        manifestPath,
-        manifestRelativePath: manifestRelativePath.replaceAll('\\', '/'),
-    };
 };
 class CheckpointArchiveError extends Error {
     pages;
@@ -324,32 +299,35 @@ const getProviderConfig = (provider) => provider === 'lottery-gov-cn'
     };
 const buildProviderPageUrl = (provider, apiUrl, page, pageSize, limit) => {
     const url = new URL(apiUrl);
-    url.search = provider === 'lottery-gov-cn'
-        ? new URLSearchParams({
-            gameNo: OFFICIAL_PL3.gameNo,
-            provinceId: '0',
-            pageSize: String(pageSize),
-            isVerify: '1',
-            pageNo: String(page),
-        }).toString()
-        : new URLSearchParams({
-            transactionType: '10001001',
-            lotteryId: OFFICIAL_PL3.fallbackLotteryId,
-            issueCount: String(limit),
-            startIssue: '',
-            endIssue: '',
-            startDate: '',
-            endDate: '',
-            type: '0',
-            pageNum: String(page),
-            pageSize: String(pageSize),
-            callback: 'callback',
-        }).toString();
+    url.search =
+        provider === 'lottery-gov-cn'
+            ? new URLSearchParams({
+                gameNo: OFFICIAL_PL3.gameNo,
+                provinceId: '0',
+                pageSize: String(pageSize),
+                isVerify: '1',
+                pageNo: String(page),
+            }).toString()
+            : new URLSearchParams({
+                transactionType: '10001001',
+                lotteryId: OFFICIAL_PL3.fallbackLotteryId,
+                issueCount: String(limit),
+                startIssue: '',
+                endIssue: '',
+                startDate: '',
+                endDate: '',
+                type: '0',
+                pageNum: String(page),
+                pageSize: String(pageSize),
+                callback: 'callback',
+            }).toString();
     return url;
 };
 const persistCheckpointRawResponse = async (dataDir, response) => {
     const contentHash = sha256(response.rawText);
-    const relativePath = path.join('raw', response.provider, response.fetchedAt.slice(0, 4), `${contentHash}.json.gz`).replaceAll('\\', '/');
+    const relativePath = path
+        .join('raw', response.provider, response.fetchedAt.slice(0, 4), `${contentHash}.json.gz`)
+        .replaceAll('\\', '/');
     const outputPath = path.join(dataDir, relativePath);
     if (!existsSync(outputPath)) {
         await writeBufferAtomically(outputPath, gzipSync(Buffer.from(response.rawText, 'utf8')));
@@ -447,7 +425,9 @@ const fetchProviderArchiveWithCheckpoint = async (input) => {
             let rawResponse;
             let payload;
             try {
-                payload = await fetchPayload(url, config.referer, input.fetchImpl, { provider: input.provider, page: pageNumber }, (response) => { rawResponse = response; });
+                payload = await fetchPayload(url, config.referer, input.fetchImpl, { provider: input.provider, page: pageNumber }, (response) => {
+                    rawResponse = response;
+                });
             }
             catch (error) {
                 if (rawResponse) {
@@ -475,9 +455,7 @@ const fetchProviderArchiveWithCheckpoint = async (input) => {
             let pageRecords;
             let fingerprint;
             try {
-                const pageSourceRecords = input.provider === 'lottery-gov-cn'
-                    ? normalizeSportteryRows(payload)
-                    : normalizeZhcwRows(payload);
+                const pageSourceRecords = input.provider === 'lottery-gov-cn' ? normalizeSportteryRows(payload) : normalizeZhcwRows(payload);
                 pageRecords = validateSyncRecords(pageSourceRecords);
                 fingerprint = pageRecords.map((record) => record.period).join('|');
                 if (pageRecords.length > 0 && fingerprints.has(fingerprint)) {
@@ -524,11 +502,11 @@ const fetchProviderArchiveWithCheckpoint = async (input) => {
                 fingerprints.add(fingerprint);
                 checkpoint.fingerprints.push(fingerprint);
             }
-            const reportedTotal = Number(input.provider === 'lottery-gov-cn' ? payload?.value?.total : payload?.total);
+            const totals = (payload ?? {});
+            const reportedTotal = Number(input.provider === 'lottery-gov-cn' ? totals.value?.total : totals.total);
             if (Number.isInteger(reportedTotal) && reportedTotal > 0) {
-                checkpoint.authoritativeTotal = input.provider === 'lottery-gov-cn' || reportedTotal < input.limit
-                    ? reportedTotal
-                    : null;
+                checkpoint.authoritativeTotal =
+                    input.provider === 'lottery-gov-cn' || reportedTotal < input.limit ? reportedTotal : null;
             }
             acceptedCount += acceptedRecords.length;
             checkpoint.nextPage = pageNumber + 1;
@@ -638,7 +616,9 @@ export const syncOfficialPl3ToStore = async (options) => {
             authoritativeTotal: archive.authoritativeTotal || undefined,
         });
         const status = store.getStatus();
-        const records = store.getRecords({ page: 1, limit: Math.max(status.usableRecords, 1) }).map((record) => ({
+        const records = store
+            .getRecords({ page: 1, limit: Math.max(status.usableRecords, 1) })
+            .map((record) => ({
             lotteryType: record.lotteryType,
             period: record.period,
             drawDate: record.drawDate,
@@ -686,12 +666,15 @@ export const syncOfficialPl3ToStore = async (options) => {
 const readExistingRecords = async (outputPath) => {
     try {
         const parsed = JSON.parse(await readFile(outputPath, 'utf8'));
-        return Array.isArray(parsed) ? parsed : Array.isArray(parsed?.records) ? parsed.records : [];
+        if (Array.isArray(parsed))
+            return parsed;
+        const container = parsed && typeof parsed === 'object' ? parsed : null;
+        return Array.isArray(container?.records) ? container.records : [];
     }
     catch (error) {
         if (error?.code === 'ENOENT')
             return [];
-        throw new Error(`现有排列3缓存格式无效: ${outputPath}`);
+        throw new Error(`排列3官方数据格式无效: ${outputPath}`, { cause: error });
     }
 };
 const mergeRecords = (existing, incoming, limit) => {
@@ -699,7 +682,9 @@ const mergeRecords = (existing, incoming, limit) => {
     for (const record of [...existing, ...incoming]) {
         sourceByPeriod.set(String(record.period || ''), record);
     }
-    const normalized = validateSyncRecords([...sourceByPeriod.values()]).slice(-limit).reverse();
+    const normalized = validateSyncRecords([...sourceByPeriod.values()])
+        .slice(-limit)
+        .reverse();
     return normalized.map((record) => {
         const source = sourceByPeriod.get(record.period);
         return {
@@ -716,9 +701,7 @@ const writeCache = async (dataDir, incoming, limit, sourceUrl) => {
     const outputPath = path.join(resolvedDataDir, 'pl3.json');
     const existing = await readExistingRecords(outputPath);
     const records = mergeRecords(existing, incoming, normalizedLimit);
-    const warnings = records.length < normalizedLimit
-        ? [`请求 ${normalizedLimit} 期，当前有效缓存为 ${records.length} 期。`]
-        : [];
+    const warnings = records.length < normalizedLimit ? [`请求 ${normalizedLimit} 期，当前有效缓存为 ${records.length} 期。`] : [];
     await writeJsonAtomically(outputPath, {
         provider: 'official',
         lotteryType: 'pl3',
@@ -750,9 +733,13 @@ export const syncOfficialFile = async (options) => {
         parsed = JSON.parse(await readFile(filePath, 'utf8'));
     }
     catch (error) {
-        throw new Error(`无法读取排列3 JSON 文件: ${filePath} (${error instanceof Error ? error.message : String(error)})`);
+        throw new Error(`无法读取排列3 JSON 文件: ${filePath} (${error instanceof Error ? error.message : String(error)})`, { cause: error });
     }
-    const records = Array.isArray(parsed) ? parsed : parsed?.records;
+    const records = Array.isArray(parsed)
+        ? parsed
+        : parsed && typeof parsed === 'object' && Array.isArray(parsed.records)
+            ? parsed.records
+            : [];
     if (!Array.isArray(records))
         throw new Error('导入文件必须是记录数组或包含 records 数组的对象。');
     validateSyncRecords(records);

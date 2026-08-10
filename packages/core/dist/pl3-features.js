@@ -19,7 +19,7 @@ const canonicalize = (value) => {
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const round = (value) => Number(value.toFixed(12));
 const zeroes = (length) => Array.from({ length }, () => 0);
-const frequencies = (counts, denominator) => counts.map((count) => denominator > 0 ? round(count / denominator) : 0);
+const frequencies = (counts, denominator) => counts.map((count) => (denominator > 0 ? round(count / denominator) : 0));
 const numberType = (numbers) => {
     const unique = new Set(numbers).size;
     return unique === 1 ? 'triple' : unique === 2 ? 'group3' : 'group6';
@@ -31,7 +31,7 @@ const buildPositionCounts = (records) => {
     }));
     return counts;
 };
-const entropy = (distribution) => round(distribution.reduce((total, probability) => probability > 0 ? total - probability * Math.log(probability) : total, 0));
+const entropy = (distribution) => round(distribution.reduce((total, probability) => (probability > 0 ? total - probability * Math.log(probability) : total), 0));
 const concentration = (distribution) => round(distribution.reduce((total, probability) => total + probability ** 2, 0));
 const jsDivergence = (left, right) => {
     const epsilon = 1e-12;
@@ -78,7 +78,9 @@ const buildWindowFeatures = (records, window) => {
     const oddCountCounts = zeroes(4);
     const numberTypeCounts = { triple: 0, group3: 0, group6: 0 };
     recent.forEach((record) => {
-        record.numbersList.forEach((digit) => { globalDigitCounts[digit] += 1; });
+        record.numbersList.forEach((digit) => {
+            globalDigitCounts[digit] += 1;
+        });
         const sum = record.numbersList.reduce((total, digit) => total + digit, 0);
         const span = Math.max(...record.numbersList) - Math.min(...record.numbersList);
         const oddCount = record.numbersList.filter((digit) => digit % 2 === 1).length;
@@ -87,9 +89,7 @@ const buildWindowFeatures = (records, window) => {
         oddCountCounts[oddCount] += 1;
         numberTypeCounts[numberType(record.numbersList)] += 1;
     });
-    const previousFrequency = previous.length > 0
-        ? buildPositionCounts(previous).map((counts) => frequencies(counts, previous.length))
-        : null;
+    const previousFrequency = previous.length > 0 ? buildPositionCounts(previous).map((counts) => frequencies(counts, previous.length)) : null;
     return {
         requestedWindow: window,
         availableCount: recent.length,

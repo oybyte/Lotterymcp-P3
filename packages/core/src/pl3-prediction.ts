@@ -39,6 +39,7 @@ export type Pl3PredictionQuery = {
   playType?: Pl3PlayType
   generatedAt?: string
   payouts?: Partial<Pl3PayoutConfig>
+  trainingStatus?: 'confirmed' | 'mixed'
 }
 
 export type Pl3Ticket = {
@@ -49,6 +50,17 @@ export type Pl3Ticket = {
   score: number
   pairDigit?: number
   singleDigit?: number
+  scoreComposition?: Pl3TicketScoreComposition
+}
+
+export type Pl3TicketScoreComposition = {
+  positionFrequency: number
+  digitFrequency: number
+  sumFrequency: number
+  oddEvenFrequency: number
+  spanFrequency: number
+  numberTypeFrequency: number
+  leadingFeature: keyof Pl3TicketScoreComposition
 }
 
 export type Pl3BacktestPlayMetrics = {
@@ -115,6 +127,14 @@ export type Pl3SettlementRevision = {
   reason: string
 }
 
+export type Pl3PredictionDataStatus = {
+  confirmedRecords: number
+  singleSourceRecords: number
+  conflictRecords: number
+  unclassifiedRecords: number
+  dualSourceCoverage: number | null
+}
+
 export type Pl3PredictionResult = {
   predictionId: string
   lotteryType: Pl3LotteryType
@@ -126,6 +146,7 @@ export type Pl3PredictionResult = {
     fromPeriod: string
     toPeriod: string
     trainingDataHash: string
+    dataStatus: Pl3PredictionDataStatus
   }
   model: {
     name: 'weighted-frequency'
@@ -137,6 +158,7 @@ export type Pl3PredictionResult = {
     periods: number
     tickets: number
     playType: Pl3PlayType
+    trainingStatus: 'confirmed' | 'mixed'
   }
   payouts: Pl3PayoutConfig & {
     note: string
@@ -169,6 +191,7 @@ export const PL3_DEFAULT_PERIODS = 200
 export const PL3_MAX_PERIODS = 1000
 export const PL3_DEFAULT_TICKETS = 10
 export const PL3_MAX_TICKETS = 100
+export const PL3_DEFAULT_TRAINING_STATUS = 'mixed' as const
 export const PL3_MODEL_WEIGHTS = {
   positionFrequency: 0.3,
   digitFrequency: 0.2,
@@ -209,7 +232,9 @@ const parseNumbers = (record: Pl3SourceRecord): [number, number, number] | null 
     ? record.numbersList
     : Array.isArray(record.numbers_list)
       ? record.numbers_list
-      : String(record.numbers || '').split(/[,\s]+/).filter(Boolean)
+      : String(record.numbers || '')
+          .split(/[,\s]+/)
+          .filter(Boolean)
   const values = raw.map((item) => Number(item))
   if (values.length !== 3 || values.some((item) => !Number.isInteger(item) || item < 0 || item > 9)) {
     return null
@@ -225,7 +250,9 @@ export const normalizePl3Records = (records: readonly Pl3SourceRecord[]): Pl3Rec
       throw new Pl3PredictionError('LOTTERYMCP_PL3_INVALID_RECORD', '排列3历史数据包含无效记录。')
     }
 
-    const lotteryType = String(sourceRecord.lotteryType || PL3_LOTTERY_TYPE).trim().toLowerCase()
+    const lotteryType = String(sourceRecord.lotteryType || PL3_LOTTERY_TYPE)
+      .trim()
+      .toLowerCase()
     if (lotteryType !== PL3_LOTTERY_TYPE) {
       throw new Pl3PredictionError(
         'LOTTERYMCP_ONLY_PL3_SUPPORTED',
@@ -234,19 +261,15 @@ export const normalizePl3Records = (records: readonly Pl3SourceRecord[]): Pl3Rec
     }
 
     const period = String(sourceRecord.period || '').trim()
-    const drawDate = String(sourceRecord.drawDate || '').trim().slice(0, 10)
+    const drawDate = String(sourceRecord.drawDate || '')
+      .trim()
+      .slice(0, 10)
     const numbersList = parseNumbers(sourceRecord)
     if (!period || !/^\d{5,12}$/.test(period)) {
-      throw new Pl3PredictionError(
-        'LOTTERYMCP_PL3_INVALID_PERIOD',
-        `排列3历史数据包含无效期号: ${period || '(空)'}`,
-      )
+      throw new Pl3PredictionError('LOTTERYMCP_PL3_INVALID_PERIOD', `排列3历史数据包含无效期号: ${period || '(空)'}`)
     }
     if (!numbersList) {
-      throw new Pl3PredictionError(
-        'LOTTERYMCP_PL3_INVALID_NUMBERS',
-        `排列3第 ${period} 期必须包含三个 0-9 数字。`,
-      )
+      throw new Pl3PredictionError('LOTTERYMCP_PL3_INVALID_NUMBERS', `排列3第 ${period} 期必须包含三个 0-9 数字。`)
     }
     if (!isValidPl3DrawDate(drawDate)) {
       throw new Pl3PredictionError(
@@ -264,11 +287,10 @@ export const normalizePl3Records = (records: readonly Pl3SourceRecord[]): Pl3Rec
     }
     const previous = byPeriod.get(period)
     if (previous && (previous.numbers !== normalized.numbers || previous.drawDate !== normalized.drawDate)) {
-      throw new Pl3PredictionError(
-        'LOTTERYMCP_PL3_DUPLICATE_PERIOD',
-        `排列3第 ${period} 期存在冲突的重复记录。`,
-        { previous, current: normalized },
-      )
+      throw new Pl3PredictionError('LOTTERYMCP_PL3_DUPLICATE_PERIOD', `排列3第 ${period} 期存在冲突的重复记录。`, {
+        previous,
+        current: normalized,
+      })
     }
     byPeriod.set(period, normalized)
   }
@@ -299,6 +321,7 @@ type ScoredCombination = {
   numbers: [number, number, number]
   display: string
   score: number
+  composition: Pl3TicketScoreComposition
 }
 
 const scoreDirectCombinations = (records: readonly Pl3Record[]): ScoredCombination[] => {
@@ -330,19 +353,41 @@ const scoreDirectCombinations = (records: readonly Pl3Record[]): ScoredCombinati
         const sum = hundred + ten + unit
         const oddCount = numbers.filter((digit) => digit % 2 === 1).length
         const span = Math.max(...numbers) - Math.min(...numbers)
-        const positionFrequency = numbers.reduce(
-          (value, digit, index) => value + positionCounts[index]![digit] / total,
-          0,
-        ) / 3
+        const positionFrequency =
+          numbers.reduce((value, digit, index) => value + positionCounts[index]![digit] / total, 0) / 3
         const digitFrequency = numbers.reduce((value, digit) => value + digitCounts[digit] / (total * 3), 0) / 3
-        const score =
-          positionFrequency * PL3_MODEL_WEIGHTS.positionFrequency +
-          digitFrequency * PL3_MODEL_WEIGHTS.digitFrequency +
-          (sumCounts[sum] / total) * PL3_MODEL_WEIGHTS.sumFrequency +
-          (oddCounts[oddCount] / total) * PL3_MODEL_WEIGHTS.oddEvenFrequency +
-          (spanCounts[span] / total) * PL3_MODEL_WEIGHTS.spanFrequency +
+        const positionFrequencyValue = positionFrequency * PL3_MODEL_WEIGHTS.positionFrequency
+        const digitFrequencyValue = digitFrequency * PL3_MODEL_WEIGHTS.digitFrequency
+        const sumFrequencyValue = (sumCounts[sum] / total) * PL3_MODEL_WEIGHTS.sumFrequency
+        const oddEvenFrequencyValue = (oddCounts[oddCount] / total) * PL3_MODEL_WEIGHTS.oddEvenFrequency
+        const spanFrequencyValue = (spanCounts[span] / total) * PL3_MODEL_WEIGHTS.spanFrequency
+        const numberTypeFrequencyValue =
           (typeCounts[numberType(numbers)] / total) * PL3_MODEL_WEIGHTS.numberTypeFrequency
-        combinations.push({ numbers, display: `${hundred}${ten}${unit}`, score: round(score) })
+        const contributingFeatures: Array<[keyof Pl3TicketScoreComposition, number]> = [
+          ['positionFrequency', positionFrequencyValue],
+          ['digitFrequency', digitFrequencyValue],
+          ['sumFrequency', sumFrequencyValue],
+          ['oddEvenFrequency', oddEvenFrequencyValue],
+          ['spanFrequency', spanFrequencyValue],
+          ['numberTypeFrequency', numberTypeFrequencyValue],
+        ]
+        const composition: Pl3TicketScoreComposition = {
+          positionFrequency: round(positionFrequencyValue),
+          digitFrequency: round(digitFrequencyValue),
+          sumFrequency: round(sumFrequencyValue),
+          oddEvenFrequency: round(oddEvenFrequencyValue),
+          spanFrequency: round(spanFrequencyValue),
+          numberTypeFrequency: round(numberTypeFrequencyValue),
+          leadingFeature: contributingFeatures.sort((left, right) => right[1] - left[1])[0]![0],
+        }
+        const score =
+          positionFrequencyValue +
+          digitFrequencyValue +
+          sumFrequencyValue +
+          oddEvenFrequencyValue +
+          spanFrequencyValue +
+          numberTypeFrequencyValue
+        combinations.push({ numbers, display: `${hundred}${ten}${unit}`, score: round(score), composition })
       }
     }
   }
@@ -353,6 +398,23 @@ const scoreDirectCombinations = (records: readonly Pl3Record[]): ScoredCombinati
 const buildTicketPools = (records: readonly Pl3Record[]) => {
   const directScores = scoreDirectCombinations(records)
   const scoreByDisplay = new Map(directScores.map((item) => [item.display, item.score]))
+  const compositionByDisplay = new Map(directScores.map((item) => [item.display, item.composition]))
+
+  const averageComposition = (variants: readonly string[]) => {
+    const base = Object.fromEntries(
+      (Object.keys(directScores[0]!.composition) as Array<keyof Pl3TicketScoreComposition>)
+        .filter((key) => key !== 'leadingFeature')
+        .map((key) => {
+          const average =
+            variants.reduce((sum, item) => sum + (compositionByDisplay.get(item)?.[key] || 0), 0) / variants.length
+          return [key, round(average)]
+        }),
+    ) as Omit<Pl3TicketScoreComposition, 'leadingFeature'>
+    const leadingFeature = (Object.entries(base) as Array<[keyof Pl3TicketScoreComposition, number]>).sort(
+      (left, right) => right[1] - left[1],
+    )[0]![0]
+    return { ...base, leadingFeature }
+  }
 
   const direct = directScores.map<Pl3Ticket>((item, index) => ({
     rank: index + 1,
@@ -360,6 +422,7 @@ const buildTicketPools = (records: readonly Pl3Record[]) => {
     numbers: item.numbers,
     display: item.display,
     score: item.score,
+    scoreComposition: item.composition,
   }))
 
   const group3: Pl3Ticket[] = []
@@ -376,11 +439,14 @@ const buildTicketPools = (records: readonly Pl3Record[]) => {
         score: round(score),
         pairDigit,
         singleDigit,
+        scoreComposition: averageComposition(variants),
       })
     }
   }
   group3.sort((left, right) => right.score - left.score || left.display.localeCompare(right.display))
-  group3.forEach((ticket, index) => { ticket.rank = index + 1 })
+  group3.forEach((ticket, index) => {
+    ticket.rank = index + 1
+  })
 
   const group6: Pl3Ticket[] = []
   for (let first = 0; first <= 7; first += 1) {
@@ -394,12 +460,15 @@ const buildTicketPools = (records: readonly Pl3Record[]) => {
           numbers: [first, second, third],
           display: `${first}${second}${third}`,
           score: round(score),
+          scoreComposition: averageComposition(variants),
         })
       }
     }
   }
   group6.sort((left, right) => right.score - left.score || left.display.localeCompare(right.display))
-  group6.forEach((ticket, index) => { ticket.rank = index + 1 })
+  group6.forEach((ticket, index) => {
+    ticket.rank = index + 1
+  })
 
   return { direct, group3, group6 }
 }
@@ -480,7 +549,7 @@ export const backtestPl3 = (
   const payouts = resolvePayouts(options.payouts)
   const testCount = Math.min(100, Math.max(records.length - PL3_MIN_RECORDS, 0))
   const emptyPlayMetrics = (): Pl3BacktestPlayMetrics => ({
-    ticketsPerDraw: playType === 'mixed' ? allocateMixedTickets(tickets).direct : playType === 'direct' ? tickets : 0,
+    ticketsPerDraw: 0,
     winningTickets: 0,
     winningDraws: 0,
     hitRate: 0,
@@ -491,10 +560,17 @@ export const backtestPl3 = (
     group3: emptyPlayMetrics(),
     group6: emptyPlayMetrics(),
   }
-  const allocation = playType === 'mixed'
-    ? allocateMixedTickets(tickets)
-    : { direct: playType === 'direct' ? tickets : 0, group3: playType === 'group3' ? tickets : 0, group6: playType === 'group6' ? tickets : 0 }
-  PLAY_TYPES.forEach((type) => { plays[type].ticketsPerDraw = allocation[type] })
+  const allocation =
+    playType === 'mixed'
+      ? allocateMixedTickets(tickets)
+      : {
+          direct: playType === 'direct' ? tickets : 0,
+          group3: playType === 'group3' ? tickets : 0,
+          group6: playType === 'group6' ? tickets : 0,
+        }
+  PLAY_TYPES.forEach((type) => {
+    plays[type].ticketsPerDraw = allocation[type]
+  })
 
   if (testCount === 0) {
     return {
@@ -542,10 +618,16 @@ export const backtestPl3 = (
         wonPlays.add(ticket.playType)
       }
     }
-    wonPlays.forEach((type) => { plays[type].winningDraws += 1 })
+    wonPlays.forEach((type) => {
+      plays[type].winningDraws += 1
+    })
 
     const directTickets = generated.filter((ticket) => ticket.playType === 'direct')
-    if (directTickets.some((ticket) => ticket.numbers.filter((value, position) => value === target.numbersList[position]).length >= 2)) {
+    if (
+      directTickets.some(
+        (ticket) => ticket.numbers.filter((value, position) => value === target.numbersList[position]).length >= 2,
+      )
+    ) {
       positionTwoDigitDraws += 1
     }
     if (generated.some((ticket) => multisetOverlap(ticket.numbers, target.numbersList) >= 2)) {
@@ -612,27 +694,62 @@ const normalizePeriodCount = (value: unknown) => {
 const normalizeTicketCount = (value: unknown) => {
   const parsed = Number(value ?? PL3_DEFAULT_TICKETS)
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > PL3_MAX_TICKETS) {
-    throw new Pl3PredictionError(
-      'LOTTERYMCP_PL3_INVALID_TICKETS',
-      `排列3预测注数必须是 1-${PL3_MAX_TICKETS} 的整数。`,
-    )
+    throw new Pl3PredictionError('LOTTERYMCP_PL3_INVALID_TICKETS', `排列3预测注数必须是 1-${PL3_MAX_TICKETS} 的整数。`)
   }
   return parsed
 }
 
 const normalizePlayType = (value: unknown): Pl3PlayType => {
-  const normalized = String(value || 'mixed').trim().toLowerCase()
+  const normalized = String(value || 'mixed')
+    .trim()
+    .toLowerCase()
   if (!['direct', 'group3', 'group6', 'mixed'].includes(normalized)) {
     throw new Pl3PredictionError('LOTTERYMCP_PL3_INVALID_PLAY_TYPE', `不支持的排列3玩法: ${normalized}`)
   }
   return normalized as Pl3PlayType
 }
 
+const summarizeDataStatus = (
+  sourceRecords: readonly Pl3SourceRecord[],
+  trainingRecords: readonly Pl3Record[],
+): Pl3PredictionDataStatus => {
+  const statusByPeriod = new Map<string, string>()
+  for (const source of sourceRecords) {
+    if (source && typeof source === 'object') {
+      const period = String(source.period ?? '').trim()
+      const status = String(source.status ?? '').trim()
+      if (period && status) statusByPeriod.set(period, status)
+    }
+  }
+
+  let confirmedRecords = 0
+  let singleSourceRecords = 0
+  let conflictRecords = 0
+  let unclassifiedRecords = 0
+  for (const record of trainingRecords) {
+    const status = statusByPeriod.get(record.period)
+    if (status === 'confirmed') confirmedRecords += 1
+    else if (status === 'single_source') singleSourceRecords += 1
+    else if (status === 'conflict') conflictRecords += 1
+    else unclassifiedRecords += 1
+  }
+
+  return {
+    confirmedRecords,
+    singleSourceRecords,
+    conflictRecords,
+    unclassifiedRecords,
+    dualSourceCoverage: confirmedRecords > 0 ? confirmedRecords / trainingRecords.length : null,
+  }
+}
+
 export const predictPl3 = (
   sourceRecords: readonly Pl3SourceRecord[],
   query: Pl3PredictionQuery = {},
 ): Pl3PredictionResult => {
-  const lotteryType = String(query.lotteryType || PL3_LOTTERY_TYPE).trim().toLowerCase()
+  const lotteryType = String(query.lotteryType || PL3_LOTTERY_TYPE)
+    .trim()
+    .toLowerCase()
   if (lotteryType !== PL3_LOTTERY_TYPE) {
     throw new Pl3PredictionError('LOTTERYMCP_ONLY_PL3_SUPPORTED', `当前版本只支持排列3(pl3)，不支持 ${lotteryType}。`)
   }
@@ -641,26 +758,47 @@ export const predictPl3 = (
   const tickets = normalizeTicketCount(query.tickets)
   const playType = normalizePlayType(query.playType)
   const payouts = resolvePayouts(query.payouts)
-  const normalized = normalizePl3Records(sourceRecords).slice(-periods)
+  const trainingStatus = query.trainingStatus === 'confirmed' ? 'confirmed' : PL3_DEFAULT_TRAINING_STATUS
+  const statusByPeriod = new Map<string, string>()
+  for (const source of sourceRecords) {
+    if (source && typeof source === 'object') {
+      statusByPeriod.set(String(source.period ?? '').trim(), String(source.status ?? '').trim())
+    }
+  }
+  let normalized = normalizePl3Records(sourceRecords)
+  if (trainingStatus === 'confirmed') {
+    normalized = normalized.filter((record) => statusByPeriod.get(record.period) === 'confirmed')
+  }
+  normalized = normalized.slice(-periods)
   if (normalized.length < PL3_MIN_RECORDS) {
-    throw new Pl3PredictionError(
-      'LOTTERYMCP_PL3_INSUFFICIENT_DATA',
-      `排列3预测至少需要 ${PL3_MIN_RECORDS} 条有效历史记录，当前只有 ${normalized.length} 条。`,
-      { required: PL3_MIN_RECORDS, actual: normalized.length },
-    )
+    const message =
+      trainingStatus === 'confirmed'
+        ? `排列3预测使用双源确认训练窗口需要至少 ${PL3_MIN_RECORDS} 条 confirmed 记录，当前只有 ${normalized.length} 条（来源状态不足或需先完成双源同步）。`
+        : `排列3预测至少需要 ${PL3_MIN_RECORDS} 条有效历史记录，当前只有 ${normalized.length} 条。`
+    throw new Pl3PredictionError('LOTTERYMCP_PL3_INSUFFICIENT_DATA', message, {
+      required: PL3_MIN_RECORDS,
+      actual: normalized.length,
+      trainingStatus,
+    })
   }
 
-  const trainingDataHash = sha256(JSON.stringify(normalized.map((record) => [record.period, record.drawDate, record.numbers])))
+  const trainingDataHash = sha256(
+    JSON.stringify(normalized.map((record) => [record.period, record.drawDate, record.numbers])),
+  )
+  const dataStatus = summarizeDataStatus(sourceRecords, normalized)
   const generated = generateTickets(normalized, tickets, playType)
   const generatedAt = query.generatedAt || new Date().toISOString()
-  const predictionId = sha256(JSON.stringify({
-    modelVersion: PL3_MODEL_VERSION,
-    trainingDataHash,
-    periods,
-    tickets,
-    playType,
-    payouts,
-  }))
+  const predictionId = sha256(
+    JSON.stringify({
+      modelVersion: PL3_MODEL_VERSION,
+      trainingDataHash,
+      periods,
+      tickets,
+      playType,
+      payouts,
+      trainingStatus,
+    }),
+  )
 
   return {
     predictionId,
@@ -673,6 +811,7 @@ export const predictPl3 = (
       fromPeriod: normalized[0]!.period,
       toPeriod: normalized.at(-1)!.period,
       trainingDataHash,
+      dataStatus,
     },
     model: {
       name: 'weighted-frequency',
@@ -680,7 +819,7 @@ export const predictPl3 = (
       scoreIsProbability: false,
       weights: PL3_MODEL_WEIGHTS,
     },
-    query: { periods, tickets, playType },
+    query: { periods, tickets, playType, trainingStatus },
     payouts: {
       ...payouts,
       note: '奖金与 ROI 为按当前配置计算的历史模拟，不代表未来收益。',
@@ -696,8 +835,8 @@ const readLedger = async (ledgerPath: string): Promise<Pl3PredictionLedger> => {
     const parsed = JSON.parse(await readFile(ledgerPath, 'utf8')) as Partial<Pl3PredictionLedger>
     if (!Array.isArray(parsed.predictions)) throw new Error('predictions must be an array')
     return { version: 1, predictions: parsed.predictions }
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') return { version: 1, predictions: [] }
+  } catch (error) {
+    if ((error as { code?: string })?.code === 'ENOENT') return { version: 1, predictions: [] }
     throw new Pl3PredictionError('LOTTERYMCP_PL3_LEDGER_INVALID', `排列3预测账本格式无效: ${ledgerPath}`, error)
   }
 }
@@ -711,8 +850,9 @@ export const writeJsonAtomically = async (targetPath: string, payload: unknown) 
       try {
         await rename(temporaryPath, targetPath)
         break
-      } catch (error: any) {
-        if (!['EACCES', 'EBUSY', 'EPERM'].includes(error?.code) || attempt >= 5) throw error
+      } catch (error) {
+        const code = (error as { code?: string })?.code
+        if (!['EACCES', 'EBUSY', 'EPERM'].includes(code ?? '') || attempt >= 5) throw error
         await sleep(50 * 2 ** attempt)
       }
     }
@@ -731,16 +871,16 @@ const withLedgerLock = async <T>(ledgerPath: string, callback: () => Promise<T>)
     try {
       handle = await open(lockPath, 'wx')
       await handle.writeFile(new Date().toISOString(), 'utf8')
-    } catch (error: any) {
-      if (error?.code !== 'EEXIST') throw error
+    } catch (error) {
+      if ((error as { code?: string })?.code !== 'EEXIST') throw error
       try {
         const info = await stat(lockPath)
         if (Date.now() - info.mtimeMs > 120_000) {
           await unlink(lockPath)
           continue
         }
-      } catch (statError: any) {
-        if (statError?.code === 'ENOENT') continue
+      } catch (statError) {
+        if ((statError as { code?: string })?.code === 'ENOENT') continue
         throw statError
       }
       if (Date.now() >= deadline) {
@@ -772,92 +912,87 @@ export const upsertPl3Prediction = async (ledgerPath: string, prediction: Pl3Pre
     return prediction
   })
 
-export const settlePl3Predictions = async (
-  ledgerPath: string,
-  sourceRecords: readonly Pl3SourceRecord[],
-) => withLedgerLock(ledgerPath, async () => {
-  const ledger = await readLedger(ledgerPath)
-  const records = normalizePl3Records(sourceRecords)
-  const statusByPeriod = new Map<string, 'confirmed' | 'single_source' | 'unknown'>()
-  for (const record of sourceRecords) {
-    const period = String(record?.period || '').trim()
-    const status = String((record as Record<string, unknown>)?.status || '').trim()
-    statusByPeriod.set(
-      period,
-      status === 'confirmed' || status === 'single_source' ? status : 'unknown',
-    )
-  }
-  let settledCount = 0
-
-  for (const prediction of ledger.predictions) {
-    if (prediction.settlement.status === 'confirmed') continue
-    const baseIndex = records.findIndex((record) => record.period === prediction.afterPeriod)
-    const target = baseIndex >= 0 ? records[baseIndex + 1] : undefined
-    if (!target) continue
-    const winning = prediction.tickets.filter((ticket) => ticketWins(ticket, target.numbersList))
-    const returnAmount = winning.reduce((sum, ticket) => sum + prediction.payouts[ticket.playType], 0)
-    const cost = prediction.tickets.length * prediction.payouts.stake
-    const providerStatus = statusByPeriod.get(target.period) || 'unknown'
-    const nextStatus = providerStatus === 'confirmed' ? 'confirmed' : 'provisional'
-    const revisedAt = new Date().toISOString()
-    const nextRevision: Pl3SettlementRevision = {
-      status: nextStatus,
-      targetPeriod: target.period,
-      drawDate: target.drawDate,
-      actualNumbers: target.numbersList,
-      providerStatus,
-      winningTickets: winning.length,
-      returnAmount: round(returnAmount, 2),
-      profit: round(returnAmount - cost, 2),
-      revisedAt,
-      reason: providerStatus === 'confirmed' ? 'confirmed-draw-observed' : 'single-source-draw-observed',
+export const settlePl3Predictions = async (ledgerPath: string, sourceRecords: readonly Pl3SourceRecord[]) =>
+  withLedgerLock(ledgerPath, async () => {
+    const ledger = await readLedger(ledgerPath)
+    const records = normalizePl3Records(sourceRecords)
+    const statusByPeriod = new Map<string, 'confirmed' | 'single_source' | 'unknown'>()
+    for (const record of sourceRecords) {
+      const period = String(record?.period || '').trim()
+      const status = String((record as Record<string, unknown>)?.status || '').trim()
+      statusByPeriod.set(period, status === 'confirmed' || status === 'single_source' ? status : 'unknown')
     }
-    const previous = prediction.settlement
-    const previousNumbers = previous.actualNumbers?.join(',')
-    const nextNumbers = target.numbersList.join(',')
-    if (
-      previous.status === 'provisional' &&
-      providerStatus === 'confirmed' &&
-      previous.targetPeriod === target.period &&
-      previousNumbers &&
-      previousNumbers !== nextNumbers
-    ) {
-      prediction.settlement = {
-        ...previous,
-        status: 'disputed',
+    let settledCount = 0
+
+    for (const prediction of ledger.predictions) {
+      if (prediction.settlement.status === 'confirmed') continue
+      const baseIndex = records.findIndex((record) => record.period === prediction.afterPeriod)
+      const target = baseIndex >= 0 ? records[baseIndex + 1] : undefined
+      if (!target) continue
+      const winning = prediction.tickets.filter((ticket) => ticketWins(ticket, target.numbersList))
+      const returnAmount = winning.reduce((sum, ticket) => sum + prediction.payouts[ticket.playType], 0)
+      const cost = prediction.tickets.length * prediction.payouts.stake
+      const providerStatus = statusByPeriod.get(target.period) || 'unknown'
+      const nextStatus = providerStatus === 'confirmed' ? 'confirmed' : 'provisional'
+      const revisedAt = new Date().toISOString()
+      const nextRevision: Pl3SettlementRevision = {
+        status: nextStatus,
+        targetPeriod: target.period,
+        drawDate: target.drawDate,
+        actualNumbers: target.numbersList,
         providerStatus,
-        disputedAt: revisedAt,
-        revisions: [
-          ...(previous.revisions || []),
-          {
-            ...nextRevision,
-            status: 'disputed',
-            reason: 'confirmed-draw-differs-from-provisional-settlement',
-          },
-        ],
+        winningTickets: winning.length,
+        returnAmount: round(returnAmount, 2),
+        profit: round(returnAmount - cost, 2),
+        revisedAt,
+        reason: providerStatus === 'confirmed' ? 'confirmed-draw-observed' : 'single-source-draw-observed',
+      }
+      const previous = prediction.settlement
+      const previousNumbers = previous.actualNumbers?.join(',')
+      const nextNumbers = target.numbersList.join(',')
+      if (
+        previous.status === 'provisional' &&
+        providerStatus === 'confirmed' &&
+        previous.targetPeriod === target.period &&
+        previousNumbers &&
+        previousNumbers !== nextNumbers
+      ) {
+        prediction.settlement = {
+          ...previous,
+          status: 'disputed',
+          providerStatus,
+          disputedAt: revisedAt,
+          revisions: [
+            ...(previous.revisions || []),
+            {
+              ...nextRevision,
+              status: 'disputed',
+              reason: 'confirmed-draw-differs-from-provisional-settlement',
+            },
+          ],
+        }
+        settledCount += 1
+        continue
+      }
+      prediction.settlement = {
+        status: nextStatus,
+        targetPeriod: target.period,
+        drawDate: target.drawDate,
+        actualNumbers: target.numbersList,
+        winningTickets: winning.length,
+        returnAmount: round(returnAmount, 2),
+        profit: round(returnAmount - cost, 2),
+        settledAt: revisedAt,
+        providerStatus,
+        ...(nextStatus === 'confirmed' ? { confirmedAt: revisedAt } : {}),
+        revisions: [...(previous.revisions || []), nextRevision],
       }
       settledCount += 1
-      continue
     }
-    prediction.settlement = {
-      status: nextStatus,
-      targetPeriod: target.period,
-      drawDate: target.drawDate,
-      actualNumbers: target.numbersList,
-      winningTickets: winning.length,
-      returnAmount: round(returnAmount, 2),
-      profit: round(returnAmount - cost, 2),
-      settledAt: revisedAt,
-      providerStatus,
-      ...(nextStatus === 'confirmed' ? { confirmedAt: revisedAt } : {}),
-      revisions: [...(previous.revisions || []), nextRevision],
-    }
-    settledCount += 1
-  }
 
-  if (settledCount > 0) await writeJsonAtomically(ledgerPath, ledger)
-  return { settledCount, ledger }
-})
+    if (settledCount > 0) await writeJsonAtomically(ledgerPath, ledger)
+    return { settledCount, ledger }
+  })
 
 export const getPl3PredictionLedgerSummary = async (ledgerPath: string) => {
   const ledger = await readLedger(ledgerPath)
@@ -867,6 +1002,55 @@ export const getPl3PredictionLedgerSummary = async (ledgerPath: string) => {
     provisional: ledger.predictions.filter((item) => item.settlement.status === 'provisional').length,
     confirmed: ledger.predictions.filter((item) => item.settlement.status === 'confirmed').length,
     disputed: ledger.predictions.filter((item) => item.settlement.status === 'disputed').length,
-    settled: ledger.predictions.filter((item) => item.settlement.status === 'settled').length,
+  }
+}
+
+export type Pl3SlaEvidenceItem = {
+  predictionId: string
+  afterPeriod: string
+  generatedAt: string
+  targetPeriod: string | null
+  firstObservedAt: string | null
+  predictedBeforeFirstObservation: boolean | null
+}
+
+export const verifyPl3PredictionSla = async (
+  ledgerPath: string,
+  getEvidence: (prediction: { afterPeriod: string; generatedAt: string }) => {
+    targetPeriod: string | null
+    firstObservedAt: string | null
+    predictedBeforeFirstObservation: boolean | null
+  },
+): Promise<{
+  total: number
+  withEvidence: number
+  verifiedBeforeObservation: number
+  violated: number
+  pendingEvidence: number
+  items: Pl3SlaEvidenceItem[]
+}> => {
+  const ledger = await readLedger(ledgerPath)
+  const items: Pl3SlaEvidenceItem[] = ledger.predictions.map((prediction) => {
+    const evidence = getEvidence({
+      afterPeriod: prediction.afterPeriod,
+      generatedAt: prediction.generatedAt,
+    })
+    return {
+      predictionId: prediction.predictionId,
+      afterPeriod: prediction.afterPeriod,
+      generatedAt: prediction.generatedAt,
+      targetPeriod: evidence.targetPeriod,
+      firstObservedAt: evidence.firstObservedAt,
+      predictedBeforeFirstObservation: evidence.predictedBeforeFirstObservation,
+    }
+  })
+  const withEvidence = items.filter((item) => item.predictedBeforeFirstObservation !== null).length
+  return {
+    total: items.length,
+    withEvidence,
+    verifiedBeforeObservation: items.filter((item) => item.predictedBeforeFirstObservation === true).length,
+    violated: items.filter((item) => item.predictedBeforeFirstObservation === false).length,
+    pendingEvidence: items.filter((item) => item.predictedBeforeFirstObservation === null).length,
+    items,
   }
 }

@@ -6,8 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-const readJson = (relativePath) =>
-  JSON.parse(readFileSync(path.join(repoRoot, relativePath), 'utf8'))
+const readJson = (relativePath) => JSON.parse(readFileSync(path.join(repoRoot, relativePath), 'utf8'))
 
 test('cli package does not depend on unpublished local file dependencies', () => {
   const cliPackage = readJson(path.join('packages', 'cli', 'package.json'))
@@ -73,10 +72,7 @@ test('published cli is TypeScript-only and ships the P3 sync implementation', ()
 test('public docs stay product-facing and do not expose internal conversation wording', () => {
   const readme = readFileSync(path.join(repoRoot, 'README.md'), 'utf8')
   const usageDoc = readFileSync(path.join(repoRoot, 'docs', 'mcp-usage.zh-CN.md'), 'utf8')
-  const promptDoc = readFileSync(
-    path.join(repoRoot, 'docs', 'prompt-templates.zh-CN.md'),
-    'utf8',
-  )
+  const promptDoc = readFileSync(path.join(repoRoot, 'docs', 'prompt-templates.zh-CN.md'), 'utf8')
 
   assert.match(readme, /分析问题示例/)
   assert.doesNotMatch(readme, /AI 提示词模板/)
@@ -91,4 +87,15 @@ test('public docs stay product-facing and do not expose internal conversation wo
   assert.match(promptDoc, /分析问题示例/)
   assert.doesNotMatch(promptDoc, /提示词模板/)
   assert.doesNotMatch(promptDoc, /\?{3,}/)
+})
+
+test('one-command reproduction smoke covers data archive, prediction, SLA and snapshot', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const output = execFileSync(process.execPath, [path.join(repoRoot, 'scripts', 'reproduction-smoke.mjs')], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'inherit'],
+    windowsHide: true,
+    maxBuffer: 16 * 1024 * 1024,
+  })
+  assert.match(output, /一键复现通过/)
 })

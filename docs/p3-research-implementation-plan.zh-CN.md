@@ -2,7 +2,7 @@
 
 ## 当前实现状态（0.7.0）
 
-截至 2026-07-21，M001 数据档案、双来源核对、checkpoint 断点续传、冲突隔离、不可变 dataset snapshot、raw GC、M002、As-of 特征、实验注册、nested walk-forward、逐折恢复、一次性冻结评估、M003 线上运维表和中文只读 Web 研究台已经实现。
+截至 2026-08-10，M001 数据档案、双来源核对、checkpoint 断点续传、冲突隔离、不可变 dataset snapshot、raw GC、M002、As-of 特征、实验注册、nested walk-forward、逐折恢复、一次性冻结评估、M003 线上运维表和中文只读 Web 研究台已经实现。预测已附带数据状态标注、分年度可信度报告与 confirmed-only 训练窗口基线，候选票附带排序分构成解释，SLA 时间证据（预测早于目标期首次本地 observation）通过 `data sla` 与 Web 总览呈现，失败运行记录输入参数以便复现。Web 研究台新增「数据快照」页，展示不可变数据集快照、哈希校验与绑定实验。`npm run reproduce` 在临时目录一键复现完整链路（数据档案 → 预测 → SLA → 快照校验）。
 
 当前正式 evaluator 为 `uniform-theory`、`random-monte-carlo` 和 `weighted-frequency-v1`。0.7.0 交付个人服务器每日预测闭环、不可变日报、中文只读研究台、Web 认证、企业微信通知和数据迁移 bundle。逻辑回归、LightGBM、ONNX、Champion 晋级和 Shadow 仍按后续路线图推进，不属于 0.7.0 发布物。
 

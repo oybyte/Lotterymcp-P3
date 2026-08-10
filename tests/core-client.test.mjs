@@ -189,10 +189,16 @@ test('official local provider reads cached lottery data with pagination and summ
   assert.equal(history.meta.plan, 'public')
   assert.equal(history.meta.hasMore, true)
   assert.equal(history.meta.total, 2)
-  assert.deepEqual(history.data.map((item) => item.period), ['2026003'])
+  assert.deepEqual(
+    history.data.map((item) => item.period),
+    ['2026003'],
+  )
 
   const periods = await client.getPeriods({ lotteryType: 'pl3', limit: 2 })
-  assert.deepEqual(periods.data.map((item) => item.period), ['2026003', '2026002'])
+  assert.deepEqual(
+    periods.data.map((item) => item.period),
+    ['2026003', '2026002'],
+  )
 
   const summary = await client.getSummary({})
   assert.equal(summary.data.total, 3)
@@ -282,7 +288,10 @@ test('remote provider rejects invalid P3 data from all four endpoints', async ()
     token: 'test-token',
     fetchImpl: async (input) => {
       const endpoint = new URL(input).pathname.split('/').at(-1)
-      return new Response(JSON.stringify(payloads[endpoint]), { status: 200, headers: { 'content-type': 'application/json' } })
+      return new Response(JSON.stringify(payloads[endpoint]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
     },
   })
 
@@ -305,7 +314,7 @@ test('remote and official providers produce the same pl3 prediction for the same
   const records = Array.from({ length: 100 }, (_, index) => ({
     lotteryType: 'pl3',
     period: String(26001 + index),
-    drawDate: `2026-01-${String(index % 28 + 1).padStart(2, '0')}`,
+    drawDate: `2026-01-${String((index % 28) + 1).padStart(2, '0')}`,
     numbers: `${index % 10},${(index + 3) % 10},${(index + 6) % 10}`,
   })).reverse()
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'lotterymcp-provider-parity-'))
@@ -319,10 +328,20 @@ test('remote and official providers produce the same pl3 prediction for the same
   const remoteClient = createLotteryMcpClient({
     apiBaseUrl: 'https://api.example.com',
     token: 'test-token',
-    fetchImpl: async () => new Response(JSON.stringify({
-      data: records,
-      meta: { plan: 'member', provider: 'remote', requestLimit: null, generatedAt: new Date().toISOString(), hasMore: false },
-    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({
+          data: records,
+          meta: {
+            plan: 'member',
+            provider: 'remote',
+            requestLimit: null,
+            generatedAt: new Date().toISOString(),
+            hasMore: false,
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
   })
   const query = { periods: 100, tickets: 5, playType: 'mixed', generatedAt: '2026-01-01T00:00:00.000Z' }
   const official = await createPl3PredictionService(officialClient, { dataDir: officialDir }).predict(query)

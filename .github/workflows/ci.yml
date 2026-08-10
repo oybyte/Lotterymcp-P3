@@ -18,6 +18,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - run: npm run lint
+      - run: npm run reproduce
       - run: npm run docs:screenshots:check
       - run: npm audit --omit=dev
       - run: npm pack --dry-run --workspace lotterymcp-core --workspace lotterymcp-server --workspace neuxnbcp --workspace lotterymcp
